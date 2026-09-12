@@ -6,7 +6,6 @@ import QRCode from 'qrcode';
 import nodemailer from 'nodemailer';
 // @ts-ignore
 import { BakongKHQR, IndividualInfo, khqrData } from 'bakong-khqr';
-import { createServer as createViteServer } from 'vite';
 import { INITIAL_PRODUCTS, INITIAL_ORDERS, INITIAL_USER_PROFILE, INITIAL_COUPONS, INITIAL_VISITOR_ANALYTICS, INITIAL_STORE_SETTINGS, INITIAL_RESELLER_CODES } from './src/data/mockData.js';
 import { securityMiddleware, withSecurityWrapper, Security } from './serverSecurity.js';
 import jwt from 'jsonwebtoken';
