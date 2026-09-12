@@ -1,0 +1,17 @@
+[Unit]
+Description=Uchiro Store Telegram Bots
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/uchiro_store_bot
+Environment="ADMIN_BOT_TOKEN=PUT_YOUR_ADMIN_BOT_TOKEN_HERE"
+Environment="STORE_BOT_TOKEN=PUT_YOUR_STORE_BOT_TOKEN_HERE"
+Environment="OWNER_IDS=PUT_YOUR_TELEGRAM_ID_HERE"
+ExecStart=/home/ubuntu/uchiro_store_bot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
