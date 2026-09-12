@@ -7,13 +7,13 @@ import nodemailer from 'nodemailer';
 // @ts-ignore
 import { BakongKHQR, IndividualInfo, khqrData } from 'bakong-khqr';
 import { createServer as createViteServer } from 'vite';
-import { INITIAL_PRODUCTS, INITIAL_ORDERS, INITIAL_USER_PROFILE, INITIAL_COUPONS, INITIAL_VISITOR_ANALYTICS, INITIAL_STORE_SETTINGS, INITIAL_RESELLER_CODES } from './src/data/mockData';
-import { securityMiddleware, withSecurityWrapper, Security } from './serverSecurity';
+import { INITIAL_PRODUCTS, INITIAL_ORDERS, INITIAL_USER_PROFILE, INITIAL_COUPONS, INITIAL_VISITOR_ANALYTICS, INITIAL_STORE_SETTINGS, INITIAL_RESELLER_CODES } from './src/data/mockData.js';
+import { securityMiddleware, withSecurityWrapper, Security } from './serverSecurity.js';
 import jwt from 'jsonwebtoken';
-import { validateUsername, UserRole } from './src/models/userModel';
-import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware';
-import { Order } from './src/types';
-import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase } from './src/lib/remoteDb';
+import { validateUsername, UserRole } from './src/models/userModel.js';
+import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware.js';
+import { Order } from './src/types.js';
+import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase } from './src/lib/remoteDb.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
