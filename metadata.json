@@ -1,0 +1,6 @@
+{
+  "name": "Uchiro Store - Cambodia Gaming Marketplace",
+  "description": "Premium Roblox & gaming marketplace in Cambodia. Blox Fruits, Godhuman Accounts, 14-day warranty & instant KHQR Bakong payment settlement.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
