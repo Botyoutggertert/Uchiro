@@ -4,19 +4,9 @@
 // ephemeral per serverless instance -- products/orders/users can silently
 // reset. This module lets that same data live in Firestore instead, using the
 // Firebase project already configured for auth (see src/lib/firebase.ts).
-//
-// It is entirely opt-in: if FIREBASE_SERVICE_ACCOUNT is not set, every
-// function here is a no-op and the app behaves exactly as before (local JSON
-// file only -- fine for local dev and for Railway, which has a persistent disk).
-//
-// To enable on Vercel:
-//   1. Firebase Console -> Project Settings -> Service Accounts -> Generate new private key.
-//   2. Copy the entire downloaded JSON file's contents.
-//   3. In Vercel Project Settings -> Environment Variables, add FIREBASE_SERVICE_ACCOUNT
-//      with that JSON as the value (paste it as one line/string).
 
-import type { App } from 'firebase-admin/app';
-import type { Firestore } from 'firebase-admin/firestore';
+import { initializeApp, cert, getApps, type App } from 'firebase-admin/app';
+import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
 const COLLECTION = 'uchiro_store_system';
 const DOCUMENT_ID = 'database';
@@ -37,11 +27,6 @@ function tryInit(): void {
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { initializeApp, cert, getApps } = require('firebase-admin/app');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getFirestore } = require('firebase-admin/firestore');
-
     const serviceAccount = JSON.parse(rawCredentials);
     app = getApps().length > 0 ? getApps()[0] : initializeApp({ credential: cert(serviceAccount) });
     firestore = getFirestore(app);
