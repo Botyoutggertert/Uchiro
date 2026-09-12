@@ -1,5 +1,5 @@
-import { Product, Order, UserProfile, Transaction, Coupon, VisitorAnalyticsData, StoreSettings, SongTrack, ResellerRedeemCode } from '../types';
-import { generateRandomReferralCode } from '../utils/referral';
+import { Product, Order, UserProfile, Transaction, Coupon, VisitorAnalyticsData, StoreSettings, SongTrack, ResellerRedeemCode } from '../types.js';
+import { generateRandomReferralCode } from '../utils/referral.js';
 
 export const INITIAL_SONGS: SongTrack[] = [
   {
@@ -34,7 +34,6 @@ export const INITIAL_STORE_SETTINGS: StoreSettings = {
   telegramAdminUrl: 'https://t.me/Noreakyout',
   discordUrl: '',
   supportPhone: '+855 16866125',
-  // Bot 1: Telegram Admin Order Alert Bot
   telegramBotToken: '8872244008:AAFe3-ykCk0K8N6WI2sEdXAZNj18ZXKLt5A',
   telegramAdminChatId: '6594079594',
   telegramChannelId: '@Noreakyout',
@@ -42,26 +41,22 @@ export const INITIAL_STORE_SETTINGS: StoreSettings = {
   topupAlertsEnabled: true,
   lowStockAlertsEnabled: true,
   alertSoundEnabled: true,
-  // Bot 2: Store Customer Verification & Service Bot
   verificationBotToken: '8872244008:AAFe3-ykCk0K8N6WI2sEdXAZNj18ZXKLt5A',
   verificationBotUsername: '@uchirostore_bot',
   verificationBotEnabled: true,
   autoCheckRobloxProfile: true,
   miniAppUrl: 'https://t.me/uchirostore_bot/app',
-  // KHQR Merchant Details
   bakongAccountId: 'khinsovan_noreakyout@bkrt',
   merchantName: 'UCHIRO STORE',
   merchantCity: 'Phnom Penh',
   khqrApiKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiOTY3MDk3YjdhYTczNDAzMyJ9LCJpYXQiOjE3ODY1MTE3OTEsImV4cCI6MTc5NDI4Nzc5MX0.0UrVyKNPuzaJzHyYvxkUxHqGN0zaTmaY7JSvCuI0hi4',
   webhookUrl: 'https://api.uchiro.gg/v1/khqr-webhook',
   autoApproveKHQR: true,
-  // Background Music
   bgMusicEnabled: true,
   bgMusicAutoplay: false,
   bgMusicLoop: true,
   defaultVolume: 0.35,
   songs: INITIAL_SONGS,
-  // Admin Login credentials
   adminUsername: 'youtgg13@gmail.com',
   adminPasswordHash: 'Khyoutgg007',
   adminSecurityPin: '1686',
