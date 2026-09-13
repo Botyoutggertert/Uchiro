@@ -6,13 +6,14 @@ import QRCode from 'qrcode';
 import nodemailer from 'nodemailer';
 // @ts-ignore
 import { BakongKHQR, IndividualInfo, khqrData } from 'bakong-khqr';
-import { INITIAL_PRODUCTS, INITIAL_ORDERS, INITIAL_USER_PROFILE, INITIAL_COUPONS, INITIAL_VISITOR_ANALYTICS, INITIAL_STORE_SETTINGS, INITIAL_RESELLER_CODES } from './src/data/mockData.js';
-import { securityMiddleware, withSecurityWrapper, Security } from './serverSecurity.js';
+import { createServer as createViteServer } from 'vite';
+import { INITIAL_PRODUCTS, INITIAL_ORDERS, INITIAL_USER_PROFILE, INITIAL_COUPONS, INITIAL_VISITOR_ANALYTICS, INITIAL_STORE_SETTINGS, INITIAL_RESELLER_CODES } from './src/data/mockData';
+import { securityMiddleware, withSecurityWrapper, Security } from './serverSecurity';
 import jwt from 'jsonwebtoken';
-import { validateUsername, UserRole } from './src/models/userModel.js';
-import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware.js';
-import { Order } from './src/types.js';
-import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase } from './src/lib/remoteDb.js';
+import { validateUsername, UserRole } from './src/models/userModel';
+import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware';
+import { Order } from './src/types';
+import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase } from './src/lib/remoteDb';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -4580,7 +4581,7 @@ function injectDynamicSocialTags(html: string, req: express.Request): string {
     const price = typeof product.priceUSD === 'number' ? product.priceUSD : (product.price || 0);
     const priceFormatted = price.toFixed(2);
     const isAvailable = !product.isSold && (product.stock ?? 1) > 0;
-    const productUrl = `${protocol}://${host}/?product=${encodeURIComponent(product.id)}`;
+    const productUrl = `${protocol}://${host}/product/${encodeURIComponent(product.id)}`;
     const productTitle = escapeHtml(
       product.titleKhmer
         ? `${product.title} (${product.titleKhmer}) - $${priceFormatted} | Uchiro Store`
@@ -4685,6 +4686,28 @@ function injectDynamicSocialTags(html: string, req: express.Request): string {
   }
 }
 
+// Serve the built frontend + inject per-product Open Graph/Twitter tags server-side.
+// This must run OUTSIDE startServer() because startServer() is skipped entirely on
+// Vercel (see the `if (!process.env.VERCEL) startServer()` guard below) -- without
+// this block registered here, Telegram/Facebook link previews for shared product
+// URLs always showed the generic store title/image instead of the product's own,
+// since those crawlers don't execute the client-side JS that normally sets these tags.
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  const indexHtmlPath = path.join(distPath, 'index.html');
+  app.use(express.static(distPath, { index: false }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    try {
+      const template = fs.readFileSync(indexHtmlPath, 'utf-8');
+      const finalHtml = injectDynamicSocialTags(template, req);
+      res.status(200).set({ 'Content-Type': 'text/html' }).end(finalHtml);
+    } catch (err) {
+      res.sendFile(indexHtmlPath);
+    }
+  });
+}
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -4717,21 +4740,9 @@ async function startServer() {
     });
 
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    const indexHtmlPath = path.join(distPath, 'index.html');
-    app.use(express.static(distPath));
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) return next();
-      try {
-        const template = fs.readFileSync(indexHtmlPath, 'utf-8');
-        const finalHtml = injectDynamicSocialTags(template, req);
-        res.status(200).set({ 'Content-Type': 'text/html' }).end(finalHtml);
-      } catch (err) {
-        res.sendFile(indexHtmlPath);
-      }
-    });
   }
+  // Production static+OG serving is registered above, outside this function,
+  // so it also runs on Vercel (which never calls startServer() at all).
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Uchiro Store Full-Stack Server running on port ${PORT}`);
