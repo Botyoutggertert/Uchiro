@@ -487,9 +487,17 @@ export async function loginWithGoogleCredential(idToken: string) {
 
 /**
  * Send Password Reset Email (User receives link/code to reset)
+ * After resetting, Firebase's hosted reset page sends the user back to
+ * the real store domain (via actionCodeSettings.url) instead of leaving
+ * them on an unbranded default *.firebaseapp.com page with no way back.
  */
 export async function triggerPasswordReset(email: string) {
-  await sendPasswordResetEmail(auth, email);
+  const siteUrl =
+    (typeof window !== 'undefined' && window.location.origin) || 'https://www.uchiro.store';
+  await sendPasswordResetEmail(auth, email, {
+    url: `${siteUrl}/?reset=done`,
+    handleCodeInApp: false,
+  });
 }
 
 /**
