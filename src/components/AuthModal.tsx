@@ -162,6 +162,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         ? 'ការផ្ទៀងផ្ទាត់ Google អាចទាមទារការចូលប្រើលើ browser ផ្ទាល់។ អ្នកអាចប្រើប្រាស់អ៊ីមែល និងពាក្យសម្ងាត់បានយ៉ាងរហ័ស។'
         : 'Google auth is restricted in preview. You can also instantly sign in or register with email & password.';
     }
+    if (code === 'auth/unauthorized-continue-uri') {
+      return lang === 'KM'
+        ? 'កំហុសការកំណត់រចនាសម្ព័ន្ធ: uchiro.store មិនទាន់ត្រូវបានបញ្ចូលក្នុងបញ្ជី Authorized domains នៅ Firebase Console ទេ។'
+        : 'Setup error: uchiro.store has not been added to Authorized domains in the Firebase Console yet. Ask your developer to add it under Authentication > Settings > Authorized domains.';
+    }
     return err?.message || 'Authentication error occurred. Please try again.';
   };
 
