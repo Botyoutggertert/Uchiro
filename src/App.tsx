@@ -29,6 +29,7 @@ import { BottomNavBar } from './components/BottomNavBar';
 import { StoreHero } from './components/StoreHero';
 import { CustomerStoreStats } from './components/CustomerStoreStats';
 import { StoreFooter } from './components/StoreFooter';
+import { LiveActivityFeed } from './components/LiveActivityFeed';
 import { CategoryGrid } from './components/CategoryGrid';
 import { ProductSortDropdown } from './components/ProductSortDropdown';
 import { ProductCard } from './components/ProductCard';
@@ -1670,6 +1671,9 @@ export function App() {
               </AdminRouteGuard>
             )}
       </main>
+
+      {/* Live Purchase / Top-Up Activity Ticker */}
+      {!isAdminScreen && <LiveActivityFeed lang={lang} />}
 
       {/* Customer Store Footer */}
       {!isAdminScreen && (
