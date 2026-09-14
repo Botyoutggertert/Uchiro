@@ -447,6 +447,45 @@ app.get('/api/state', (req, res) => {
   });
 });
 
+// Masks a username for public display, e.g. "testbuyer2" -> "te*****r2"
+function maskUsername(name: string): string {
+  const clean = (name || 'Player').trim();
+  if (clean.length <= 3) return clean[0] + '***';
+  return `${clean.slice(0, 2)}${'*'.repeat(Math.max(3, clean.length - 4))}${clean.slice(-2)}`;
+}
+
+// Live activity feed: recent completed purchases + top-ups, for a "recent activity"
+// ticker on the storefront. Usernames are masked for privacy.
+app.get('/api/activity/live-feed', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 15, 50);
+
+  const purchaseEvents = (db.orders || [])
+    .filter((o) => o.status === 'delivered')
+    .map((o) => ({
+      type: 'purchase' as const,
+      username: maskUsername(o.buyerUsername || o.customerName || 'Player'),
+      label: o.product?.title || o.productName || 'an item',
+      amountUSD: o.totalUSD || 0,
+      timestamp: o.timestamp || Date.parse(o.date || '') || Date.now(),
+    }));
+
+  const topupEvents = (db.topupRequests || [])
+    .filter((t: any) => t.status === 'delivered')
+    .map((t: any) => ({
+      type: 'topup' as const,
+      username: maskUsername(t.customerUsername || 'Player'),
+      label: 'Balance Top-Up',
+      amountUSD: t.totalCreditUSD || t.amountUSD || 0,
+      timestamp: t.timestamp || Date.parse(t.createdAt || '') || Date.now(),
+    }));
+
+  const feed = [...purchaseEvents, ...topupEvents]
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, limit);
+
+  res.json({ success: true, feed });
+});
+
 // Auth Username Resolution & Linkage
 app.post('/api/auth/link-username', async (req, res) => {
   const { username, email } = req.body;
