@@ -29,6 +29,7 @@ export interface Product {
     instructionsKhmer?: string;
   };
   galleryImages?: string[];
+  videoUrl?: string; // optional product video (YouTube/direct link) shown first in the media gallery
   accountSpecs?: {
     levelRank?: string;
     meleeSkills?: string;
