@@ -168,6 +168,7 @@ export const AdminItemsList: React.FC<AdminItemsListProps> = ({
                           {product.category === 'evade' && '🏃‍♂️'}
                           {product.category === 'mm2' && '🗡️'}
                           {product.category === 'blade-ball' && '⚔️'}
+                          {product.category === 'steal-egg' && '🥚'}
                         </span>
                         <span>{product.category}</span>
                       </span>
