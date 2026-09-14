@@ -829,6 +829,139 @@ app.post('/api/security/toggle-under-attack', (req, res) => {
 });
 
 // Helper to dispatch official welcome email
+/**
+ * Low-level SMTP sender shared by all transactional emails (welcome, receipt, etc).
+ * Falls back to a "simulated/logged" mode when SMTP env vars aren't configured,
+ * so nothing throws in local dev -- it just logs instead of actually sending.
+ */
+async function sendSmtpEmail(
+  to: string,
+  subject: string,
+  html: string
+): Promise<{ sent: boolean; deliveryMode: string; messageId: string; error?: string }> {
+  let messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpPort = Number(process.env.SMTP_PORT) || 587;
+  const fromAddress = process.env.SMTP_FROM || 'Uchiro Store <noreply@uchiro.store>';
+
+  if (!smtpUser || !smtpPass) {
+    console.log(`[Email Service] Email to ${to} processed (simulated mode: SMTP credentials not set).`);
+    return { sent: true, deliveryMode: 'simulated_logged', messageId };
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: smtpHost || 'smtp.gmail.com',
+      port: smtpPort,
+      secure: smtpPort === 465,
+      connectionTimeout: 8000,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+
+    const info = await transporter.sendMail({ from: fromAddress, to, subject, html });
+    messageId = info.messageId || messageId;
+    console.log(`[Email Service] Live SMTP email sent to ${to}. Message ID: ${messageId}`);
+    return { sent: true, deliveryMode: 'smtp', messageId };
+  } catch (err: any) {
+    console.warn(`[Email Service] SMTP transport failed (${err.message}). Falling back to logged delivery mode.`);
+    return { sent: true, deliveryMode: 'smtp_fallback_logged', messageId, error: err.message };
+  }
+}
+
+function recordSentEmail(record: Omit<SentEmailRecord, 'id' | 'sentAt'> & { id?: string }) {
+  if (!Array.isArray(db.sentEmails)) db.sentEmails = [];
+  db.sentEmails.unshift({
+    id: record.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    sentAt: new Date().toISOString(),
+    ...record,
+  } as SentEmailRecord);
+  if (db.sentEmails.length > 100) db.sentEmails = db.sentEmails.slice(0, 100);
+}
+
+/**
+ * Look up a buyer's registered email from an order (orders don't store email
+ * directly -- only a username), then send them a purchase receipt.
+ * Safe to call for every order: silently does nothing if no email is on file,
+ * and never throws (a failed receipt must never block an order approval).
+ */
+async function sendOrderReceiptEmail(order: Order): Promise<void> {
+  try {
+    const lookupName = (order.buyerUsername || order.customerName || '').trim().toLowerCase();
+    if (!lookupName || !Array.isArray(db.users)) return;
+
+    const buyer = db.users.find((u: any) => (u.username || '').toLowerCase() === lookupName);
+    const email = buyer?.email;
+    if (!email || typeof email !== 'string' || !email.includes('@')) return;
+
+    const price = order.totalUSD || 0;
+    const productTitle = order.product?.title || order.productName || 'Item';
+    const orderDate = order.date || new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Phnom_Penh' });
+    const warrantyDays = order.credentialsDelivered?.warrantyDurationDays;
+
+    const subject = `🧾 Receipt for Order ${order.id} - Uchiro Store`;
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Order Receipt</title></head>
+<body style="margin:0;padding:0;background-color:#0c0e14;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#e2e2ec;">
+  <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#0c0e14;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width:580px;background-color:#13151f;border-radius:18px;border:1px solid rgba(62,207,142,0.28);overflow:hidden;box-shadow:0 12px 36px rgba(0,0,0,0.6);">
+        <tr><td style="background:linear-gradient(90deg,#3ECF8E 0%,#ffd7a1 50%,#3ECF8E 100%);height:5px;line-height:5px;font-size:5px;">&nbsp;</td></tr>
+        <tr><td style="padding:28px 24px 14px 24px;text-align:center;background-color:#10121a;">
+          <span style="font-size:17px;font-weight:800;color:#3ECF8E;letter-spacing:2px;text-transform:uppercase;">✓ Payment Confirmed</span>
+          <p style="margin:8px 0 0 0;font-size:12px;color:#8b90a0;">Uchiro Store Cambodia</p>
+        </td></tr>
+        <tr><td style="padding:24px 28px;">
+          <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#161822;border-radius:12px;border:1px solid rgba(255,255,255,0.06);">
+            <tr><td style="padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Order ID</div>
+              <div style="font-size:14px;color:#ffffff;font-weight:700;">${escapeHtml(order.id)}</div>
+            </td></tr>
+            <tr><td style="padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Item</div>
+              <div style="font-size:14px;color:#ffffff;font-weight:700;">${escapeHtml(productTitle)}</div>
+            </td></tr>
+            <tr><td style="padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Amount Paid</div>
+              <div style="font-size:18px;color:#3ECF8E;font-weight:800;">$${price.toFixed(2)} USD</div>
+            </td></tr>
+            <tr><td style="padding:16px 18px;">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Date</div>
+              <div style="font-size:14px;color:#ffffff;">${escapeHtml(orderDate)}</div>
+            </td></tr>
+          </table>
+          ${warrantyDays ? `<p style="margin:16px 0 0 0;font-size:12px;color:#8b90a0;">🛡️ Covered by a ${warrantyDays}-day warranty. Contact support if anything goes wrong.</p>` : ''}
+        </td></tr>
+        <tr><td style="padding:20px 24px;background-color:#0e1017;border-top:1px solid rgba(255,255,255,0.06);text-align:center;">
+          <p style="margin:0 0 8px 0;font-size:12px;color:#8b90a0;">Questions about this order?</p>
+          <a href="https://t.me/Noreakyout" target="_blank" style="color:#ffb230;text-decoration:none;font-weight:600;font-size:13px;">💬 Support: @Noreakyout</a>
+          <p style="margin:14px 0 0 0;font-size:11px;color:#5a5e6d;">&copy; ${new Date().getFullYear()} Uchiro Store Cambodia. All rights reserved.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+    const result = await sendSmtpEmail(email, subject, htmlContent);
+    recordSentEmail({
+      type: 'receipt',
+      to: email,
+      username: lookupName,
+      subject,
+      deliveryMode: result.deliveryMode,
+      success: result.sent,
+      error: result.error,
+    });
+  } catch (err: any) {
+    // A receipt email failing must never block/undo an order approval.
+    console.error('[Email Service] Failed to send order receipt email:', err?.message || err);
+  }
+}
+
 async function dispatchWelcomeEmail({
   email,
   username,
@@ -1550,6 +1683,7 @@ app.put('/api/orders/:id', async (req, res) => {
       newValue: 'delivered',
       badgeColor: '#3ECF8E',
     });
+    await sendOrderReceiptEmail(order);
   } else if (status === 'rejected') {
     await logActivity({
       actionType: 'order_reject',
@@ -2828,6 +2962,7 @@ async function approveOrderCore(order: Order, adminSource = "Admin Telegram Bot"
     };
   }
   await saveDatabase(db);
+  await sendOrderReceiptEmail(order);
   return order;
 }
 
