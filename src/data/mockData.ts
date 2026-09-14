@@ -1,5 +1,5 @@
-import { Product, Order, UserProfile, Transaction, Coupon, VisitorAnalyticsData, StoreSettings, SongTrack, ResellerRedeemCode } from '../types.js';
-import { generateRandomReferralCode } from '../utils/referral.js';
+import { Product, Order, UserProfile, Transaction, Coupon, VisitorAnalyticsData, StoreSettings, SongTrack, ResellerRedeemCode } from '../types';
+import { generateRandomReferralCode } from '../utils/referral';
 
 export const INITIAL_SONGS: SongTrack[] = [
   {
@@ -34,6 +34,7 @@ export const INITIAL_STORE_SETTINGS: StoreSettings = {
   telegramAdminUrl: 'https://t.me/Noreakyout',
   discordUrl: '',
   supportPhone: '+855 16866125',
+  // Bot 1: Telegram Admin Order Alert Bot
   telegramBotToken: '8872244008:AAFe3-ykCk0K8N6WI2sEdXAZNj18ZXKLt5A',
   telegramAdminChatId: '6594079594',
   telegramChannelId: '@Noreakyout',
@@ -41,22 +42,26 @@ export const INITIAL_STORE_SETTINGS: StoreSettings = {
   topupAlertsEnabled: true,
   lowStockAlertsEnabled: true,
   alertSoundEnabled: true,
+  // Bot 2: Store Customer Verification & Service Bot
   verificationBotToken: '8872244008:AAFe3-ykCk0K8N6WI2sEdXAZNj18ZXKLt5A',
   verificationBotUsername: '@uchirostore_bot',
   verificationBotEnabled: true,
   autoCheckRobloxProfile: true,
   miniAppUrl: 'https://t.me/uchirostore_bot/app',
+  // KHQR Merchant Details
   bakongAccountId: 'khinsovan_noreakyout@bkrt',
   merchantName: 'UCHIRO STORE',
   merchantCity: 'Phnom Penh',
   khqrApiKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiOTY3MDk3YjdhYTczNDAzMyJ9LCJpYXQiOjE3ODY1MTE3OTEsImV4cCI6MTc5NDI4Nzc5MX0.0UrVyKNPuzaJzHyYvxkUxHqGN0zaTmaY7JSvCuI0hi4',
   webhookUrl: 'https://api.uchiro.gg/v1/khqr-webhook',
   autoApproveKHQR: true,
+  // Background Music
   bgMusicEnabled: true,
   bgMusicAutoplay: false,
   bgMusicLoop: true,
   defaultVolume: 0.35,
   songs: INITIAL_SONGS,
+  // Admin Login credentials
   adminUsername: 'youtgg13@gmail.com',
   adminPasswordHash: 'Khyoutgg007',
   adminSecurityPin: '1686',
@@ -355,6 +360,24 @@ export const INITIAL_PRODUCTS: Product[] = [
     isShimmer: false,
     description: 'Instant Evade custom music boombox and speed booster pass. Sent as gift to your Roblox account.',
     descriptionKhmer: 'កញ្ចប់វិទ្យុចាក់ភ្លេង Boombox ក្នុង Evade និងបង្កើនល្បឿនរត់ ផ្ញើជូនជាកាដូទៅ Roblox Username របស់អ្នក។',
+    deliveryType: 'manual',
+    fulfillmentType: 'gift',
+    tradeInstructions: 'សូមបញ្ចូល Roblox Username ពេលកក់។ Admin នឹងផ្ញើ Gift ក្នុងរយៈពេល ១៥-៣០ នាទី។',
+    isFeatured: false,
+    isDraft: false,
+  },
+  {
+    id: 'prod-15',
+    title: 'Steal an Egg - Rare Golden Egg Bundle',
+    titleKhmer: 'លួចស៊ុត - ស៊ុតមាសកម្រ',
+    category: 'steal-egg',
+    price: 5.50,
+    stock: 20,
+    image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBxR1n1Wzmx22p9_PgV5QnvmwUrPlHrCuvdg6qkuwIrCj3esoKTVfwL-Lt97LsNv7R3fnS1qkikwCoLXEE8pMTRwqpJC2fI_5yES_ARfMhcU1PDR37T0huBBUbZ7-KDh5UnoSrfOLtgAsPYJNIidM3zDFfVCED-KYF5LTr9CvC0R8qYSbaYAvIt-uUyGblsgPkH50OLzrPhJPra60L-zGR-nKfq1yhOiaemEDOHv06oma5xQCJZbTjX',
+    badge: 'NEW',
+    isShimmer: true,
+    description: 'Rare golden egg bundle for Steal an Egg. Delivered as an in-game gift or trade.',
+    descriptionKhmer: 'ស៊ុតមាសកម្រសម្រាប់ហ្គេម Steal an Egg ផ្ញើជូនជាកាដូ ឬ Trade ក្នុងហ្គេម។',
     deliveryType: 'manual',
     fulfillmentType: 'gift',
     tradeInstructions: 'សូមបញ្ចូល Roblox Username ពេលកក់។ Admin នឹងផ្ញើ Gift ក្នុងរយៈពេល ១៥-៣០ នាទី។',
