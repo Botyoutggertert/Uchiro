@@ -346,6 +346,7 @@ export const AdminAddItem: React.FC<AdminAddItemProps> = ({
                 <option value="evade">🏃‍♂️ Evade (រត់គេច)</option>
                 <option value="mm2">🗡️ MM2 (Murder Mystery)</option>
                 <option value="blade-ball">⚔️ Blade Ball (បាល់ដាវ)</option>
+                <option value="steal-egg">🥚 Steal an Egg (លួចស៊ុត)</option>
               </select>
             </div>
 
