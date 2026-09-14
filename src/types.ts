@@ -1,4 +1,4 @@
-export type CategoryType = 'all' | 'account' | 'fruit' | 'gamepass' | 'evade' | 'mm2' | 'blade-ball';
+export type CategoryType = 'all' | 'account' | 'fruit' | 'gamepass' | 'evade' | 'mm2' | 'blade-ball' | 'steal-egg';
 
 export type FulfillmentType = 'account' | 'gift' | 'trade';
 
