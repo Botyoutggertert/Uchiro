@@ -486,6 +486,46 @@ app.get('/api/activity/live-feed', (req, res) => {
   res.json({ success: true, feed });
 });
 
+// Leaderboard: aggregates total spend per user from delivered orders (top buyers)
+// and delivered top-ups (top top-up users), separately. Usernames are masked
+// the same way as the live feed, for privacy.
+app.get('/api/activity/leaderboard', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 10, 25);
+
+  const buyerTotals = new Map<string, number>();
+  for (const o of db.orders || []) {
+    if (o.status !== 'delivered') continue;
+    const key = (o.buyerUsername || o.customerName || 'Player').trim();
+    if (!key) continue;
+    buyerTotals.set(key, (buyerTotals.get(key) || 0) + (o.totalUSD || 0));
+  }
+
+  const topupTotals = new Map<string, number>();
+  for (const t of (db.topupRequests || []) as any[]) {
+    if (t.status !== 'delivered') continue;
+    const key = (t.customerUsername || 'Player').trim();
+    if (!key) continue;
+    const amount = t.totalCreditUSD || t.amountUSD || 0;
+    topupTotals.set(key, (topupTotals.get(key) || 0) + amount);
+  }
+
+  const toRankedList = (totals: Map<string, number>) =>
+    Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([username, totalUSD], index) => ({
+        rank: index + 1,
+        username: maskUsername(username),
+        totalUSD: Number(totalUSD.toFixed(2)),
+      }));
+
+  res.json({
+    success: true,
+    topBuyers: toRankedList(buyerTotals),
+    topTopupUsers: toRankedList(topupTotals),
+  });
+});
+
 // Auth Username Resolution & Linkage
 app.post('/api/auth/link-username', async (req, res) => {
   const { username, email } = req.body;
