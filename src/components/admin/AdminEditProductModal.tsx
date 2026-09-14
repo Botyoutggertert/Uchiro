@@ -326,6 +326,7 @@ export const AdminEditProductModal: React.FC<AdminEditProductModalProps> = ({
                     <option value="evade">🏃‍♂️ Evade Items</option>
                     <option value="mm2">🗡️ Murder Mystery 2</option>
                     <option value="blade-ball">⚔️ Blade Ball Swords</option>
+                    <option value="steal-egg">🥚 Steal an Egg</option>
                   </select>
                 </div>
 
