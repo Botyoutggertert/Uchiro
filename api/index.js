@@ -1,10 +1,14 @@
-// This file is deliberately plain CommonJS (.cjs), which always overrides
-// package.json's "type": "module" for this one file regardless of that setting.
+// Vercel's zero-config /api router only recognizes .js, .mjs, or .ts files as
+// functions (NOT .cjs), so this file must be named index.js. But the root
+// package.json has "type": "module", which would normally make this .js file
+// run as an ES module too. The sibling api/package.json (with "type": "commonjs")
+// overrides that for everything inside this one folder, so this file safely
+// runs as plain CommonJS without affecting the rest of the project.
 //
-// Why: server.ts and its local imports (src/data/mockData.ts, src/lib/remoteDb.ts,
-// etc.) are written with extensionless relative imports, which is correct for a
-// bundler (Vite handles the frontend) but breaks Node's native ESM loader, which
-// requires exact ".js" extensions on every relative import.
+// Why CommonJS matters here: server.ts and its local imports (src/data/mockData.ts,
+// src/lib/remoteDb.ts, etc.) use extensionless relative imports, which is correct
+// for a bundler (Vite handles the frontend) but breaks Node's native ESM loader,
+// which requires exact ".js" extensions on every relative import.
 //
 // If Vercel is left to compile api/index.ts itself, it does NOT fully bundle it -
 // it transpiles TypeScript to JS roughly 1:1 and lets Node's runtime ESM resolver
