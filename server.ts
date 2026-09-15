@@ -1883,12 +1883,26 @@ app.get('/api/settings', (req, res) => {
 
 app.put('/api/settings', async (req, res) => {
   const updatedSettings = req.body;
-  const tokenChanged = updatedSettings.telegramBotToken && updatedSettings.telegramBotToken !== db.settings.telegramBotToken;
+  // Either token changing should re-register commands and restart the poller.
+  // Admin commands/approval buttons run on the admin bot when one is set, so
+  // watching only the store token would leave a newly-set admin bot inactive
+  // until the next server restart.
+  const tokenChanged =
+    (updatedSettings.telegramBotToken && updatedSettings.telegramBotToken !== db.settings.telegramBotToken) ||
+    (updatedSettings.telegramAdminBotToken && updatedSettings.telegramAdminBotToken !== db.settings.telegramAdminBotToken);
   db.settings = { ...db.settings, ...updatedSettings };
   await saveDatabase(db);
-  if (tokenChanged && db.settings.telegramBotToken) {
-    registerTelegramBotCommands(db.settings.telegramBotToken).catch(() => {});
-    startTelegramPoller().catch(() => {});
+  const activeAdminToken = getAdminBotToken();
+  if (tokenChanged && activeAdminToken) {
+    // Stop the existing poll loop so it restarts against the new token.
+    isPollingActive = false;
+    // Update offsets are per-bot, so carrying the old one over to a different
+    // bot could silently skip its pending updates.
+    pollingOffset = 0;
+    registerTelegramBotCommands(activeAdminToken).catch(() => {});
+    setTimeout(() => {
+      startTelegramPoller().catch(() => {});
+    }, 500);
   }
   res.json({ success: true, settings: db.settings });
 });
@@ -2768,7 +2782,7 @@ app.post('/api/khqr/check-payment', async (req, res) => {
       await saveDatabase(db);
 
       // Send Telegram Topup Alert if enabled
-      if (db.settings.topupAlertsEnabled && db.settings.telegramBotToken) {
+      if (db.settings.topupAlertsEnabled && getAdminBotToken()) {
         const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
         const tgText = `💰 *[UCHIRO STORE] KHQR TOP-UP RECEIVED!*\n\n` +
           `👤 *Customer:* ${buyerUsername || db.userProfile.username || 'Customer'}\n` +
@@ -2778,7 +2792,7 @@ app.post('/api/khqr/check-payment', async (req, res) => {
           `💳 *New Balance:* $${db.userProfile.balanceUSD.toFixed(2)} USD\n` +
           `⏰ *Time:* ${now}`;
 
-        fetch(`https://api.telegram.org/bot${db.settings.telegramBotToken}/sendMessage`, {
+        fetch(`https://api.telegram.org/bot${getAdminBotToken()}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3085,8 +3099,24 @@ async function approveTopupCore(topup: any): Promise<{ topup: any; totalCredit: 
   return { topup, totalCredit };
 }
 
+/**
+ * Resolves which bot token to use for ADMIN-facing traffic (order/top-up alerts,
+ * approval buttons, /approve-style commands).
+ *
+ * If a dedicated admin bot is configured, admin traffic goes through it, keeping
+ * the customer-facing store bot separate. If not, everything falls back to the
+ * store bot exactly as before -- so existing single-bot setups are unaffected.
+ */
+function getAdminBotToken(): string | undefined {
+  const adminToken = db.settings.telegramAdminBotToken;
+  if (adminToken && adminToken.includes(':') && !adminToken.includes('YOUR_BOT_TOKEN')) {
+    return adminToken;
+  }
+  return db.settings.telegramBotToken;
+}
+
 async function sendTelegramMsg(chatId: string | number, text: string, replyMarkup?: any) {
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) return null;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -3108,7 +3138,7 @@ async function sendTelegramMsg(chatId: string | number, text: string, replyMarku
 }
 
 async function editTelegramMsg(chatId: string | number, messageId: number, text: string, replyMarkup?: any) {
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) return null;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
@@ -3131,7 +3161,7 @@ async function editTelegramMsg(chatId: string | number, messageId: number, text:
 }
 
 async function answerTelegramCallback(callbackQueryId: string, text: string, showAlert = false) {
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) return null;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
@@ -3151,7 +3181,7 @@ async function answerTelegramCallback(callbackQueryId: string, text: string, sho
 }
 
 async function registerTelegramBotCommands(customToken?: string) {
-  const token = customToken || db.settings.telegramBotToken;
+  const token = customToken || getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) {
     return { success: false, error: 'Valid Telegram Bot Token is required' };
   }
@@ -3790,7 +3820,7 @@ let pollingOffset = 0;
 
 async function startTelegramPoller() {
   if (isPollingActive) return;
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) {
     return;
   }
@@ -3801,7 +3831,7 @@ async function startTelegramPoller() {
 
   (async () => {
     while (isPollingActive) {
-      const currentToken = db.settings.telegramBotToken;
+      const currentToken = getAdminBotToken();
       if (!currentToken || !currentToken.includes(':') || currentToken.includes('YOUR_BOT_TOKEN')) {
         await new Promise((r) => setTimeout(r, 5000));
         continue;
@@ -3846,7 +3876,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
 // Register Bot Slash Commands with Telegram API (Bot Menu)
 app.post('/api/telegram/register-commands', async (req, res) => {
   const { botToken } = req.body || {};
-  const token = botToken || db.settings.telegramBotToken;
+  const token = botToken || getAdminBotToken();
   const result = await registerTelegramBotCommands(token);
   res.json(result);
 });
@@ -3854,7 +3884,7 @@ app.post('/api/telegram/register-commands', async (req, res) => {
 // 10. Telegram Bot Alert & Webhook Proxy
 app.post('/api/telegram/test-alert', async (req, res) => {
   const { botToken, chatId, alertType, customMessage } = req.body;
-  const token = botToken || db.settings.telegramBotToken;
+  const token = botToken || getAdminBotToken();
   const targetChat = chatId || db.settings.telegramAdminChatId || db.settings.telegramChannelId;
 
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
@@ -3934,7 +3964,7 @@ app.post('/api/telegram/send-order-alert', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Order required' });
   }
 
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
@@ -4025,7 +4055,7 @@ app.post('/api/telegram/resend-order-alert/:id', async (req, res) => {
     return res.status(404).json({ success: false, error: 'Order not found' });
   }
 
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
@@ -4185,7 +4215,7 @@ app.post('/api/slips/submit', async (req, res) => {
   }
 
   const appBaseUrl = getAppBaseUrl(req);
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
@@ -4445,7 +4475,7 @@ app.get('/api/slips/approve', async (req, res) => {
   }
 
   // Telegram alert confirming approval
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   if (token && targetChat && isApproved) {
     fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
