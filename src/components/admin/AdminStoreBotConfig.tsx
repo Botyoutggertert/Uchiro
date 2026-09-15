@@ -70,6 +70,7 @@ export const AdminStoreBotConfig: React.FC<AdminStoreBotConfigProps> = ({
 }) => {
   // Form State for Bot 1 (Admin Alert Bot)
   const [telegramBotToken, setTelegramBotToken] = useState(settings.telegramBotToken || '');
+  const [telegramAdminBotToken, setTelegramAdminBotToken] = useState(settings.telegramAdminBotToken || '');
   const [telegramAdminChatId, setTelegramAdminChatId] = useState(settings.telegramAdminChatId || '@Noreakyout');
   const [telegramChannelId, setTelegramChannelId] = useState(settings.telegramChannelId || '@uchirostore');
   const [orderAlertsEnabled, setOrderAlertsEnabled] = useState(settings.orderAlertsEnabled ?? true);
@@ -87,6 +88,7 @@ export const AdminStoreBotConfig: React.FC<AdminStoreBotConfigProps> = ({
   // UI Visibility States
   const [showToken1, setShowToken1] = useState(false);
   const [showToken2, setShowToken2] = useState(false);
+  const [showAdminToken, setShowAdminToken] = useState(false);
   const [activeTab, setActiveTab] = useState<'alert-bot' | 'verify-bot' | 'profile-checker'>('alert-bot');
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -170,6 +172,7 @@ export const AdminStoreBotConfig: React.FC<AdminStoreBotConfigProps> = ({
     setIsSaving(true);
     onSaveSettings({
       telegramBotToken,
+      telegramAdminBotToken,
       telegramAdminChatId,
       telegramChannelId,
       orderAlertsEnabled,
@@ -402,6 +405,47 @@ export const AdminStoreBotConfig: React.FC<AdminStoreBotConfigProps> = ({
                 </div>
                 <p className="text-[11px] font-price text-[#8B90A0]">
                   Token is stored securely and processed via server-side HTTPS proxy.
+                </p>
+              </div>
+
+              {/* Admin Bot Token (separate approvals bot) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="font-headline text-xs text-[#e2e2ec] uppercase flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-[#00F0FF]" />
+                    <span>Admin Bot Token</span>
+                  </label>
+                  <span className="text-[11px] font-price text-[#8B90A0]">Optional</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showAdminToken ? 'text' : 'password'}
+                    value={telegramAdminBotToken}
+                    onChange={(e) => setTelegramAdminBotToken(e.target.value)}
+                    placeholder="8815106927:AAE0-YOUR_ADMIN_BOT_TOKEN"
+                    className="w-full bg-[#11131a] border border-white/10 focus:border-[#00F0FF] rounded-xl px-3.5 py-2.5 pr-20 text-xs font-mono text-[#9fe8ff] placeholder-[#505464] focus:outline-none transition-colors"
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminToken(!showAdminToken)}
+                      className="p-1 text-[#8B90A0] hover:text-[#9fe8ff] transition-colors"
+                      title={showAdminToken ? 'Hide Token' : 'Show Token'}
+                    >
+                      {showAdminToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(telegramAdminBotToken, 'adminToken')}
+                      className="p-1 text-[#8B90A0] hover:text-[#3ECF8E] transition-colors"
+                      title="Copy Token"
+                    >
+                      {copiedField === 'adminToken' ? <Check className="w-4 h-4 text-[#3ECF8E]" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[11px] font-price text-[#8B90A0]">
+                  Order/top-up alerts and approval buttons run through this bot. Leave blank to use the main bot above for everything.
                 </p>
               </div>
 
