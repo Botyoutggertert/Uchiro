@@ -474,10 +474,41 @@ async function ensureDbHydrated(force = false): Promise<void> {
 // ======================== API ROUTES ========================
 
 // 1. Full State Sync
+// Strips fields that should never be visible to an unauthenticated visitor
+// (bot tokens that grant full control of the bots, and password hashes/salts)
+// from a copy of the database. Used by public-facing read endpoints.
+function redactSecretsForPublicState(source: StoreDatabase): any {
+  const { telegramBotToken, telegramAdminBotToken, verificationBotToken, ...publicSettings } = source.settings as any;
+  const publicUsers = Array.isArray(source.users)
+    ? source.users.map((u: any) => {
+        const { passwordHash, salt, ...rest } = u;
+        return rest;
+      })
+    : source.users;
+
+  return { ...source, settings: publicSettings, users: publicUsers };
+}
+
 app.get('/api/state', (req, res) => {
+  // This endpoint has no auth check (the storefront needs it to load for
+  // anonymous visitors), so it must never include bot tokens or password
+  // hashes -- previously it returned the raw database, exposing both to
+  // anyone who opened the network tab.
+  let isAdminRequest = false;
+  try {
+    const authHeader = req.headers.authorization || (req.headers['x-admin-token'] as string);
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader;
+    if (token) {
+      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      isAdminRequest = decoded?.role === 'admin';
+    }
+  } catch {
+    // Invalid/missing token -- treat as a normal public request, don't error.
+  }
+
   res.json({
     success: true,
-    data: db,
+    data: isAdminRequest ? db : redactSecretsForPublicState(db),
   });
 });
 
@@ -1400,7 +1431,187 @@ app.post('/api/admin/backup/restore', async (req, res) => {
   res.json({ success: true, restoredFrom: backupId });
 });
 
-// Auto Send Welcome Email Endpoint
+// ==================== CUSTOMER TELEGRAM LOGIN ====================
+// Separate from the admin bot's polling-based command system (which only runs
+// on a long-lived server, e.g. local/Railway -- NOT on Vercel). This uses a
+// webhook instead, which works correctly on Vercel: Telegram POSTs each
+// update directly to this endpoint, so there's no persistent loop required.
+
+async function sendCustomerBotMsg(chatId: number | string, text: string): Promise<void> {
+  const token = db.settings.telegramBotToken;
+  if (!token) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    });
+  } catch (err) {
+    console.error('[customerBot] Failed to send message:', err);
+  }
+}
+
+// Telegram webhook target for the customer-facing store bot. Only handles
+// /start (to link the account) -- this bot is not the admin command bot.
+app.post('/api/telegram/customer-webhook', async (req, res) => {
+  // Respond fast; Telegram doesn't need to wait for our processing.
+  res.status(200).json({ ok: true });
+
+  try {
+    const update = req.body;
+    const msg = update?.message;
+    if (!msg || !msg.text) return;
+
+    const chatId = msg.chat?.id;
+    const telegramUsername = (msg.from?.username || '').toLowerCase();
+    if (!chatId) return;
+
+    if (msg.text.trim().toLowerCase().startsWith('/start')) {
+      if (!telegramUsername) {
+        await sendCustomerBotMsg(
+          chatId,
+          `👋 Welcome to Uchiro Store!\n\nTo use Telegram login, you need a Telegram *username* set first (Settings → Username in the Telegram app), then send /start again.`
+        );
+        return;
+      }
+
+      if (!db.telegramLinks) db.telegramLinks = {};
+      db.telegramLinks[telegramUsername] = {
+        chatId,
+        username: telegramUsername,
+        linkedAt: new Date().toISOString(),
+      };
+      await saveDatabase(db);
+
+      await sendCustomerBotMsg(
+        chatId,
+        `✅ *Linked!*\n\nYour Telegram account (@${telegramUsername}) is now connected to Uchiro Store.\n\nGo back to the site, choose "Login with Telegram", enter your username, and tap "Get Code" -- your login code will arrive right here.`
+      );
+    }
+  } catch (err) {
+    console.error('[customerBot] Webhook handling error:', err);
+  }
+});
+
+// One-time setup: registers the webhook above with Telegram for the store bot.
+// Call this once after deploying (or whenever the domain/bot token changes).
+app.post('/api/telegram/customer-webhook/register', async (req, res) => {
+  const token = db.settings.telegramBotToken;
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'Set the store bot token in Admin Settings first.' });
+  }
+
+  const baseUrl = getAppBaseUrl(req);
+  const webhookUrl = `${baseUrl}/api/telegram/customer-webhook`;
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl }),
+    });
+    const data = await response.json();
+    res.json({ success: !!data.ok, webhookUrl, telegramResponse: data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+// Check whether a Telegram username is already linked (lets the frontend show
+// "Get Code" directly vs. "open the bot to link first").
+app.get('/api/auth/telegram/link-status', (req, res) => {
+  const username = String(req.query.username || '').trim().toLowerCase().replace(/^@/, '');
+  const linked = !!(db.telegramLinks && db.telegramLinks[username]);
+  res.json({ success: true, linked });
+});
+
+const TELEGRAM_CODE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const TELEGRAM_CODE_MAX_ATTEMPTS = 5;
+const TELEGRAM_CODE_RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
+
+// Sends a fresh 6-digit login code to an already-linked Telegram user.
+app.post('/api/auth/telegram/request-code', async (req, res) => {
+  if (!isAdminAuthEnabled()) {
+    return res.status(400).json({
+      success: false,
+      error: 'Telegram login is not fully configured yet (FIREBASE_SERVICE_ACCOUNT is not set on the server).',
+    });
+  }
+
+  const username = String(req.body?.username || '').trim().toLowerCase().replace(/^@/, '');
+  if (!username) {
+    return res.status(400).json({ success: false, error: 'Telegram username is required' });
+  }
+
+  const link = db.telegramLinks?.[username];
+  if (!link) {
+    return res.json({ success: false, needsLink: true, error: 'This Telegram account is not linked yet.' });
+  }
+
+  if (!db.telegramLoginCodes) db.telegramLoginCodes = {};
+  const existing = db.telegramLoginCodes[username];
+  if (existing && existing.expiresAt - TELEGRAM_CODE_TTL_MS + TELEGRAM_CODE_RESEND_COOLDOWN_MS > Date.now()) {
+    const waitSeconds = Math.ceil((existing.expiresAt - TELEGRAM_CODE_TTL_MS + TELEGRAM_CODE_RESEND_COOLDOWN_MS - Date.now()) / 1000);
+    return res.json({ success: false, error: `Please wait ${waitSeconds}s before requesting another code.` });
+  }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  db.telegramLoginCodes[username] = { code, expiresAt: Date.now() + TELEGRAM_CODE_TTL_MS, attempts: 0 };
+  await saveDatabase(db);
+
+  await sendCustomerBotMsg(
+    link.chatId,
+    `🔐 *Your Uchiro Store login code:*\n\n*${code}*\n\nExpires in 5 minutes. Never share this code with anyone.`
+  );
+
+  res.json({ success: true });
+});
+
+// Verifies a 6-digit code and, on success, issues a Firebase custom token the
+// frontend exchanges via signInWithCustomToken() to complete login.
+app.post('/api/auth/telegram/verify-code', async (req, res) => {
+  const username = String(req.body?.username || '').trim().toLowerCase().replace(/^@/, '');
+  const code = String(req.body?.code || '').trim();
+
+  if (!username || !code) {
+    return res.status(400).json({ success: false, error: 'Username and code are required' });
+  }
+
+  const entry = db.telegramLoginCodes?.[username];
+  if (!entry) {
+    return res.json({ success: false, error: 'No active code for this account. Request a new one.' });
+  }
+  if (Date.now() > entry.expiresAt) {
+    delete db.telegramLoginCodes![username];
+    await saveDatabase(db);
+    return res.json({ success: false, error: 'Code expired. Request a new one.' });
+  }
+  if (entry.attempts >= TELEGRAM_CODE_MAX_ATTEMPTS) {
+    delete db.telegramLoginCodes![username];
+    await saveDatabase(db);
+    return res.json({ success: false, error: 'Too many attempts. Request a new code.' });
+  }
+
+  if (entry.code !== code) {
+    entry.attempts += 1;
+    await saveDatabase(db);
+    return res.json({ success: false, error: `Incorrect code (${TELEGRAM_CODE_MAX_ATTEMPTS - entry.attempts} attempts left).` });
+  }
+
+  // Correct code -- but don't consume it yet, in case token creation fails
+  // transiently below (the user shouldn't have to start over for that).
+  const result = await createTelegramCustomToken(username);
+  if (!result.success) {
+    return res.status(500).json(result);
+  }
+
+  delete db.telegramLoginCodes![username];
+  await saveDatabase(db);
+
+  res.json({ success: true, token: result.token, username });
+});
+
+
 app.post('/api/auth/send-welcome-email', async (req, res) => {
   const { email, username, referralCode } = req.body;
   if (!email || typeof email !== 'string' || !email.includes('@')) {
@@ -1979,7 +2190,11 @@ app.delete('/api/activity-logs', async (req, res) => {
 
 // 5. Store Settings API (KHQR, Logo, Songs, Branding)
 app.get('/api/settings', (req, res) => {
-  res.json({ success: true, settings: db.settings });
+  // These grant full control of the bot (send messages, read all traffic) --
+  // never expose them to an unauthenticated GET. Everything else in settings
+  // (store name, announcement, KHQR merchant info, etc.) is meant to be public.
+  const { telegramBotToken, telegramAdminBotToken, verificationBotToken, ...publicSettings } = db.settings as any;
+  res.json({ success: true, settings: publicSettings });
 });
 
 app.put('/api/settings', async (req, res) => {
