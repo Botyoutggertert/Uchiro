@@ -13,7 +13,14 @@ import jwt from 'jsonwebtoken';
 import { validateUsername, UserRole } from './src/models/userModel';
 import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware';
 import { Order } from './src/types';
-import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase } from './src/lib/remoteDb';
+import {
+  isRemotePersistenceEnabled,
+  loadRemoteDatabase,
+  saveRemoteDatabase,
+  createRemoteBackup,
+  listRemoteBackups,
+  loadRemoteBackup,
+} from './src/lib/remoteDb';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -158,10 +165,12 @@ app.get(['/health', '/api/health'], (req, res) => {
 });
 
 // Pull the latest shared data from Firestore (if configured) before handling
-// the first /api request on this serverless instance. No-op when remote
-// persistence isn't configured.
+// each /api request. Mutating requests force a fresh read, because writing
+// from a stale copy would overwrite another instance's data. No-op when
+// remote persistence isn't configured.
 app.use('/api', (req, res, next) => {
-  ensureDbHydrated().then(next).catch(next);
+  const isMutating = req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS';
+  ensureDbHydrated(isMutating).then(() => next()).catch(() => next());
 });
 
 // Security Middleware: Inspects all incoming /api traffic for suspicious scanner patterns and tracks per-IP velocity
@@ -401,6 +410,11 @@ async function saveDatabase(db: StoreDatabase): Promise<boolean> {
   // also persist there so data survives across cold starts/instances.
   if (isRemotePersistenceEnabled()) {
     const remoteOk = await saveRemoteDatabase(db as unknown as Record<string, any>);
+    if (remoteOk) {
+      // Our in-memory copy is now the authoritative one; no need to re-read it
+      // on the very next request.
+      lastHydratedAt = Date.now();
+    }
     return localOk && remoteOk;
   }
 
@@ -408,33 +422,55 @@ async function saveDatabase(db: StoreDatabase): Promise<boolean> {
 }
 
 let db = loadDatabase();
-let remoteHydrationDone = false;
+let lastHydratedAt = 0;
+let hydrationInFlight: Promise<void> | null = null;
+
+// How long a hydrated copy is considered fresh enough for read-only requests.
+const HYDRATION_TTL_MS = 3000;
 
 /**
- * On a fresh serverless instance, the in-memory `db` above only reflects
- * whatever was last written to the LOCAL file in *this* instance (which may
- * be empty/stale on Vercel). If Firestore persistence is configured, pull the
- * latest shared copy in before handling the first request of this instance.
- * This is a no-op when remote persistence isn't configured.
+ * Pulls the latest shared database from Firestore into this instance's memory.
+ *
+ * Why this must run repeatedly (not just once at cold start):
+ * Vercel runs several serverless instances concurrently, each with its own
+ * in-memory `db`. If instance A hydrated only at startup, and instance B then
+ * saved a new order, A would still hold the stale copy -- and A's next write
+ * would overwrite Firestore with that stale data, silently destroying B's
+ * order. Re-reading before writes keeps instances converged.
+ *
+ * `force` is used for mutating requests, where a stale read means lost data.
+ * Read-only requests reuse a copy up to HYDRATION_TTL_MS old to avoid hammering
+ * Firestore on every page load.
+ *
+ * No-op when remote persistence isn't configured (local dev / Railway).
  */
-async function ensureDbHydrated(): Promise<void> {
-  if (remoteHydrationDone) return;
-  remoteHydrationDone = true; // set eagerly so concurrent requests don't all trigger a fetch
-
+async function ensureDbHydrated(force = false): Promise<void> {
   if (!isRemotePersistenceEnabled()) return;
 
-  try {
-    const remote = await loadRemoteDatabase();
-    if (remote) {
-      db = remote as StoreDatabase;
-    } else {
-      // Nothing in Firestore yet (first-ever boot with remote persistence enabled) --
-      // seed it with whatever we have locally so future instances find it.
-      await saveRemoteDatabase(db as unknown as Record<string, any>);
+  if (!force && Date.now() - lastHydratedAt < HYDRATION_TTL_MS) return;
+
+  // Collapse concurrent hydrations on this instance into a single fetch.
+  if (hydrationInFlight) return hydrationInFlight;
+
+  hydrationInFlight = (async () => {
+    try {
+      const remote = await loadRemoteDatabase();
+      if (remote) {
+        db = remote as StoreDatabase;
+      } else {
+        // Nothing in Firestore yet (first-ever boot with remote persistence
+        // enabled) -- seed it with whatever we have locally.
+        await saveRemoteDatabase(db as unknown as Record<string, any>);
+      }
+      lastHydratedAt = Date.now();
+    } catch (err) {
+      console.error('[remoteDb] Hydration failed, continuing with local data:', err);
+    } finally {
+      hydrationInFlight = null;
     }
-  } catch (err) {
-    console.error('[remoteDb] Hydration failed, continuing with local data:', err);
-  }
+  })();
+
+  return hydrationInFlight;
 }
 
 // ======================== API ROUTES ========================
@@ -1298,6 +1334,73 @@ async function dispatchWelcomeEmail({
     error: sendError,
   };
 }
+
+// ==================== BACKUP & RESTORE ====================
+
+// Download the entire database as a JSON file (works with or without Firestore).
+app.get('/api/admin/backup/export', (req, res) => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="uchiro-backup-${stamp}.json"`);
+  res.send(JSON.stringify(db, null, 2));
+});
+
+// Create a timestamped snapshot in Firestore.
+app.post('/api/admin/backup/create', async (req, res) => {
+  if (!isRemotePersistenceEnabled()) {
+    return res.status(400).json({
+      success: false,
+      error: 'Snapshots require Firestore. Set FIREBASE_SERVICE_ACCOUNT, or use /api/admin/backup/export to download a file instead.',
+    });
+  }
+  const label = typeof req.body?.label === 'string' ? req.body.label.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) : 'manual';
+  const result = await createRemoteBackup(db as unknown as Record<string, any>, label || 'manual');
+  res.json(result);
+});
+
+// List available snapshots.
+app.get('/api/admin/backup/list', async (req, res) => {
+  if (!isRemotePersistenceEnabled()) {
+    return res.json({ success: true, backups: [], remoteEnabled: false });
+  }
+  const backups = await listRemoteBackups();
+  res.json({ success: true, backups, remoteEnabled: true });
+});
+
+// Restore a snapshot. Takes a safety snapshot of current state first, so a
+// mistaken restore can itself be undone.
+app.post('/api/admin/backup/restore', async (req, res) => {
+  const { backupId } = req.body || {};
+  if (!backupId || typeof backupId !== 'string') {
+    return res.status(400).json({ success: false, error: 'backupId is required' });
+  }
+  if (!isRemotePersistenceEnabled()) {
+    return res.status(400).json({ success: false, error: 'Snapshots require Firestore to be configured' });
+  }
+
+  const snapshot = await loadRemoteBackup(backupId);
+  if (!snapshot) {
+    return res.status(404).json({ success: false, error: 'Backup not found' });
+  }
+
+  await createRemoteBackup(db as unknown as Record<string, any>, 'pre-restore');
+
+  db = snapshot as StoreDatabase;
+  await saveDatabase(db);
+
+  await logActivity({
+    actionType: 'database_restore',
+    entityType: 'system',
+    entityId: backupId,
+    entityTitle: 'Database Restore',
+    details: `Database restored from backup: ${backupId}`,
+    detailsKhmer: `បានស្ដារទិន្នន័យពីច្បាប់ចម្លង៖ ${backupId}`,
+    adminId: (req.headers['x-admin-id'] as string) || 'admin',
+    badgeColor: '#ffb230',
+  });
+
+  res.json({ success: true, restoredFrom: backupId });
+});
 
 // Auto Send Welcome Email Endpoint
 app.post('/api/auth/send-welcome-email', async (req, res) => {
