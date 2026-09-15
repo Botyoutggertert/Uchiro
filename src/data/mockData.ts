@@ -43,7 +43,7 @@ export const INITIAL_STORE_SETTINGS: StoreSettings = {
   lowStockAlertsEnabled: true,
   alertSoundEnabled: true,
   // Bot 2: Store Customer Verification & Service Bot
-  verificationBotToken: '8872244008:AAFe3-ykCk0K8N6WI2sEdXAZNj18ZXKLt5A',
+  verificationBotToken: '',
   verificationBotUsername: '@uchirostore_bot',
   verificationBotEnabled: true,
   autoCheckRobloxProfile: true,
