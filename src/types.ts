@@ -197,8 +197,10 @@ export interface StoreSettings {
   exchangeRateKHR?: number; // e.g. 4100
   // Telegram Bot Integration Config
   telegramBotToken?: string;
+  telegramAdminBotToken?: string;
   telegramAdminChatId?: string;
   telegramChannelId?: string;
+  telegramChannelUrl?: string;
   orderAlertsEnabled?: boolean;
   topupAlertsEnabled?: boolean;
   lowStockAlertsEnabled?: boolean;
