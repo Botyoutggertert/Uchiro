@@ -13,14 +13,8 @@ import jwt from 'jsonwebtoken';
 import { validateUsername, UserRole } from './src/models/userModel';
 import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware';
 import { Order } from './src/types';
-import {
-  isRemotePersistenceEnabled,
-  loadRemoteDatabase,
-  saveRemoteDatabase,
-  createRemoteBackup,
-  listRemoteBackups,
-  loadRemoteBackup,
-} from './src/lib/remoteDb';
+import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase, createRemoteBackup, listRemoteBackups, loadRemoteBackup } from './src/lib/remoteDb';
+import { isAdminAuthEnabled, createTelegramCustomToken } from './src/lib/firebaseAdmin';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -305,6 +299,10 @@ interface StoreDatabase {
   sentEmails?: SentEmailRecord[];
   topupRequests?: any[];
   activityLogs?: AdminActivityLog[];
+  // Customer Telegram-login: maps lowercase Telegram @username -> their chat info
+  telegramLinks?: Record<string, { chatId: number; username: string; linkedAt: string }>;
+  // Short-lived 6-digit login codes, keyed by lowercase Telegram @username
+  telegramLoginCodes?: Record<string, { code: string; expiresAt: number; attempts: number }>;
 }
 
 function loadDatabase(): StoreDatabase {
