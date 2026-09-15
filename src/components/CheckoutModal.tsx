@@ -136,6 +136,20 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     };
   }, []);
 
+  // Lock background page scroll while the checkout sheet is open.
+  // Without this, dragging inside the sheet on mobile also scrolls the store
+  // page behind it ("scroll chaining"), which feels broken and laggy.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const previousTouchAction = document.body.style.touchAction;
+    document.body.style.overflow = 'hidden';
+    document.body.style.touchAction = 'none';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.touchAction = previousTouchAction;
+    };
+  }, []);
+
   const isSoldOut = product.isSold || product.stock <= 0;
   const isFruit = product.category === 'fruit';
   const isAccount = product.fulfillmentType === 'account' || product.category === 'account';
@@ -288,6 +302,12 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
     // 2. Real API check polling every 3 seconds
     pollIntervalRef.current = setInterval(async () => {
+      // On mobile, users switch to their banking app to actually pay. Skip the
+      // network round-trip while backgrounded -- it burns battery/data, and the
+      // next tick after they return picks the payment up anyway.
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
       try {
         setIsCheckingRealApi(true);
         const checkRes = await api.checkKHQRPayment({
@@ -681,6 +701,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     // 2. Active Polling (every 3 sec) for Bank Auto-Confirmation or Admin Approval
     if (slipPollRef.current) clearInterval(slipPollRef.current);
     slipPollRef.current = setInterval(async () => {
+      // Skip while backgrounded -- this call fetches the full orders list,
+      // which is heavy to repeat every 3s on mobile data for no benefit.
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
       try {
         // A. Check if Admin clicked confirm in Telegram or Admin Orders
         const ordersRes = await api.getOrders();
@@ -954,12 +979,12 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/80 backdrop-blur-md transition-opacity"
+        className="fixed inset-0 bg-black/85 sm:backdrop-blur-md transition-opacity"
         onClick={onClose}
       />
 
       {/* Checkout Bottom Sheet / Dialog */}
-      <div className="w-full max-w-lg bg-[#1C1F29] rounded-t-[32px] sm:rounded-[32px] z-50 relative overflow-hidden flex flex-col shadow-2xl border-t sm:border border-white/10 max-h-[92vh] animate-[slideUp_0.3s_ease-out]">
+      <div className="w-full max-w-lg bg-[#1C1F29] rounded-t-[32px] sm:rounded-[32px] z-50 relative overflow-hidden flex flex-col shadow-2xl border-t sm:border border-white/10 max-h-[92vh] max-h-[92dvh] animate-[slideUp_0.3s_ease-out]">
         {/* Drag Handle on Mobile */}
         <div className="w-full flex justify-center pt-3 pb-1 sm:hidden">
           <div className="w-12 h-1.5 bg-[#33343c] rounded-full" />
@@ -1028,7 +1053,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         </div>
 
         {/* Scrollable Body */}
-        <div className="overflow-y-auto p-5 sm:p-6 space-y-4">
+        <div className="overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-4 [-webkit-overflow-scrolling:touch] pb-[max(1.25rem,env(safe-area-inset-bottom))]">
           {/* ================= ORDER FAILED STATE (TIMEOUT OR FAILURE) ================= */}
           {isPaymentFailed ? (
             <div className="w-full bg-[#1A1215] border-2 border-[#E8433F]/60 rounded-3xl p-5 sm:p-6 space-y-5 animate-fade-in shadow-[0_0_35px_rgba(232,67,63,0.25)]">
