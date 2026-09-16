@@ -1562,6 +1562,44 @@ export class ApiUtility {
     }
   }
 
+  // Check whether a Telegram username is already linked to the store bot
+  async checkTelegramLinkStatus(username: string): Promise<{ success: boolean; linked: boolean }> {
+    try {
+      const res = await fetch(`/api/auth/telegram/link-status?username=${encodeURIComponent(username)}`);
+      return await res.json();
+    } catch {
+      return { success: false, linked: false };
+    }
+  }
+
+  // Request a 6-digit Telegram login code be sent via the store bot
+  async requestTelegramLoginCode(username: string): Promise<{ success: boolean; needsLink?: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/auth/telegram/request-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
+
+  // Verify a Telegram login code; returns a Firebase custom token on success
+  async verifyTelegramLoginCode(username: string, code: string): Promise<{ success: boolean; token?: string; error?: string }> {
+    try {
+      const res = await fetch('/api/auth/telegram/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, code }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
+
   // Get Cloudflare Anti-DDoS and WAF status
   async getDDoSStatus(): Promise<{
     success: boolean;
@@ -1615,4 +1653,4 @@ export class ApiUtility {
 
 export const api = new ApiUtility();
 
-export const Api = api;
+export const Api = api;s
