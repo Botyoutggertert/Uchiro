@@ -1653,4 +1653,4 @@ export class ApiUtility {
 
 export const api = new ApiUtility();
 
-export const Api = api;s
+export const Api = api;
