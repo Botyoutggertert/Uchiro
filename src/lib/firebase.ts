@@ -6,6 +6,7 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   signInWithCredential,
+  signInWithCustomToken,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
@@ -482,6 +483,15 @@ export async function loginWithGoogle() {
 export async function loginWithGoogleCredential(idToken: string) {
   const credential = GoogleAuthProvider.credential(idToken);
   const cred = await signInWithCredential(auth, credential);
+  return cred.user;
+}
+
+/**
+ * Completes Telegram code-login: exchanges the backend-issued custom token
+ * (from /api/auth/telegram/verify-code) for a real Firebase session.
+ */
+export async function loginWithTelegramToken(customToken: string) {
+  const cred = await signInWithCustomToken(auth, customToken);
   return cred.user;
 }
 
