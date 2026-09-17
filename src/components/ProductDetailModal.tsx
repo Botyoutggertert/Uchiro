@@ -22,7 +22,7 @@ import {
   ShieldCheck,
   Share2,
   Check,
-  Globe,
+  PlayCircle,
 } from 'lucide-react';
 import { AccountLoginRulesModal } from './AccountLoginRulesModal';
 import { updateProductSeo, getProductShareUrl } from '../utils/seo';
@@ -96,25 +96,29 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     }
   };
 
-  // Collect all photos: product.image + (product.galleryImages || []) + sample detail views
-  const photos: string[] = React.useMemo(() => {
+  // Collect all media: product.videoUrl (first, if present) + product.image + (product.galleryImages || []) + sample detail views
+  type MediaItem = { type: 'video' | 'image'; src: string };
+  const media: MediaItem[] = React.useMemo(() => {
     if (!product) return [];
-    const list: string[] = [];
-    if (product.image) list.push(product.image);
+    const list: MediaItem[] = [];
+    if (product.videoUrl) list.push({ type: 'video', src: product.videoUrl });
+    if (product.image) list.push({ type: 'image', src: product.image });
     if (product.galleryImages && Array.isArray(product.galleryImages)) {
       product.galleryImages.forEach((img) => {
-        if (img && !list.includes(img)) list.push(img);
+        if (img && !list.some((m) => m.src === img)) list.push({ type: 'image', src: img });
       });
     }
     // High-res account detail showcase images for accounts
-    if (list.length === 1 && (product.category === 'account' || product.fulfillmentType === 'account')) {
+    if (list.length <= 1 && (product.category === 'account' || product.fulfillmentType === 'account')) {
       list.push(
-        'https://lh3.googleusercontent.com/aida-public/AB6AXuD9DF2r82If6k-o9Qy6hKhyEHQ3NPbNIgYk-T7uQuAdBVMIBUCMwooA0nSI9h4M7OvdHv8fiVIVoaYKp9Y9QCCW7q1NENUTjAI_H2tRCKvW2wTwMAjOTaQVTZ-VmPi_8yukjjb1PLAGKOiVWbA0QAXzfXX6e47NWWx00S6sI_JS2eCerJIX5hJsgb0oHTfekOKXNh60Bs1LUd852ku8qCaQYOTSfUhV-eBXOtc93-Zp3lDiADWfzOnh',
-        'https://lh3.googleusercontent.com/aida-public/AB6AXuALQbCc50G6KLs92tN0eELonrjHJe-8u9EWsQqEFRatRZt7TkO-e0PvcOaTFQelO1uzme9TRCMCHWBDZlmiVtN-fZRijhhKA5PJ-BN1-Xi2HQIlzD5s7AU_tE7dn4vZqd_m9YhDvt7WU3vSdKferzlCo2crER8gHVSNillopH9LxGW74r3Amn1LcJ6gWeBoJC-vhasU5J7d-B9MoEUs0We5i5FQdWnSiQuQ92PMWG3iH-Jh9Q6QHcwm'
+        { type: 'image', src: 'https://lh3.googleusercontent.com/aida-public/AB6AXuD9DF2r82If6k-o9Qy6hKhyEHQ3NPbNIgYk-T7uQuAdBVMIBUCMwooA0nSI9h4M7OvdHv8fiVIVoaYKp9Y9QCCW7q1NENUTjAI_H2tRCKvW2wTwMAjOTaQVTZ-VmPi_8yukjjb1PLAGKOiVWbA0QAXzfXX6e47NWWx00S6sI_JS2eCerJIX5hJsgb0oHTfekOKXNh60Bs1LUd852ku8qCaQYOTSfUhV-eBXOtc93-Zp3lDiADWfzOnh' },
+        { type: 'image', src: 'https://lh3.googleusercontent.com/aida-public/AB6AXuALQbCc50G6KLs92tN0eELonrjHJe-8u9EWsQqEFRatRZt7TkO-e0PvcOaTFQelO1uzme9TRCMCHWBDZlmiVtN-fZRijhhKA5PJ-BN1-Xi2HQIlzD5s7AU_tE7dn4vZqd_m9YhDvt7WU3vSdKferzlCo2crER8gHVSNillopH9LxGW74r3Amn1LcJ6gWeBoJC-vhasU5J7d-B9MoEUs0We5i5FQdWnSiQuQ92PMWG3iH-Jh9Q6QHcwm' }
       );
     }
     return list;
   }, [product]);
+  // Kept for compatibility with the rest of this component, which indexes into `photos`
+  const photos: string[] = React.useMemo(() => media.map((m) => m.src), [media]);
 
   if (!product) return null;
 
@@ -181,18 +185,25 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             {/* Media Gallery Header */}
             <div className="flex flex-col gap-2">
               <div className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 group bg-[#0A0B0E]">
-                <img
-                  src={currentImg}
-                  alt={`${product.title} view ${photoIndex + 1}`}
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'https://lh3.googleusercontent.com/aida-public/AB6AXuAJbPmK_4tXbPo7csvq5Th9P3jTxJ0832ZJXjTEiILWmnuAzoW1cThcH0p1D2Er4LY0IgbfX0j5zzK5XO26Ej73VWHE9q3JXLYadZTOJdYu9tOtAX3vKWuuA1SA8xJA_w9FyaBAERQu816-BlDrGtKKhocghmuzg37LdL7w50CkOyb9f468g3emhq45yCP_vgOhUNTOa_3i5RhaG75oQop7T6CoQMJxn39S1XxyclZ7BACOn4MgqXrE';
-                  }}
-                  className={`w-full h-full object-cover transition-transform duration-300 ${
-                    isZoomed ? 'scale-125' : 'scale-100'
-                  }`}
-                />
-
-                {/* Left / Right Carousel Navigation Controls */}
+                {media[photoIndex]?.type === 'video' ? (
+                  <video
+                    src={currentImg}
+                    controls
+                    playsInline
+                    className="w-full h-full object-cover bg-black"
+                  />
+                ) : (
+                  <img
+                    src={currentImg}
+                    alt={`${product.title} view ${photoIndex + 1}`}
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = 'https://lh3.googleusercontent.com/aida-public/AB6AXuAJbPmK_4tXbPo7csvq5Th9P3jTxJ0832ZJXjTEiILWmnuAzoW1cThcH0p1D2Er4LY0IgbfX0j5zzK5XO26Ej73VWHE9q3JXLYadZTOJdYu9tOtAX3vKWuuA1SA8xJA_w9FyaBAERQu816-BlDrGtKKhocghmuzg37LdL7w50CkOyb9f468g3emhq45yCP_vgOhUNTOa_3i5RhaG75oQop7T6CoQMJxn39S1XxyclZ7BACOn4MgqXrE';
+                    }}
+                    className={`w-full h-full object-cover transition-transform duration-300 ${
+                      isZoomed ? 'scale-125' : 'scale-100'
+                    }`}
+                  />
+                )}
                 {photos.length > 1 && (
                   <>
                     <button
@@ -255,7 +266,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               {/* Detail Image Thumbnails Strip */}
               {photos.length > 1 && (
                 <div className="flex items-center gap-2 overflow-x-auto py-1 px-0.5 scrollbar-none">
-                  {photos.map((img, idx) => (
+                  {media.map((item, idx) => (
                     <button
                       key={idx}
                       type="button"
@@ -269,7 +280,13 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                           : 'border-white/10 opacity-60 hover:opacity-100'
                       }`}
                     >
-                      <img src={img} alt={`Thumb ${idx + 1}`} className="w-full h-full object-cover" />
+                      {item.type === 'video' ? (
+                        <div className="w-full h-full bg-black flex items-center justify-center">
+                          <PlayCircle className="w-5 h-5 text-[#ffb230]" />
+                        </div>
+                      ) : (
+                        <img src={item.src} alt={`Thumb ${idx + 1}`} className="w-full h-full object-cover" />
+                      )}
                     </button>
                   ))}
                   {isAccount && onViewPhotos && (
@@ -334,18 +351,6 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span className="text-[11px]">Telegram</span>
-                </a>
-
-                {/* Facebook Share Button */}
-                <a
-                  href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-2.5 py-1.5 rounded-xl bg-[#1877F2]/15 hover:bg-[#1877F2]/25 text-[#1877F2] border border-[#1877F2]/30 text-xs font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
-                  title="Share to Facebook"
-                >
-                  <Globe className="w-3.5 h-3.5" />
-                  <span className="text-[11px]">Facebook</span>
                 </a>
               </div>
             </div>

@@ -43,6 +43,23 @@ export const AdminAddItem: React.FC<AdminAddItemProps> = ({
   const [emailSecurity, setEmailSecurity] = useState('Unlinked (Clean)');
   const [phonePin, setPhonePin] = useState('No Pin / No Phone');
   const [galleryImages, setGalleryImages] = useState<string[]>([]);
+  const [videoUrl, setVideoUrl] = useState('');
+
+  const handleGalleryFileUpload = (index: number) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      const base64 = uploadEvent.target?.result as string;
+      if (!base64) return;
+      setGalleryImages((prev) => {
+        const next = [...prev];
+        next[index] = base64;
+        return next;
+      });
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -104,6 +121,7 @@ export const AdminAddItem: React.FC<AdminAddItemProps> = ({
         phonePin,
       } : undefined,
       galleryImages: galleryImages.filter(Boolean),
+      videoUrl: videoUrl.trim() || undefined,
       tradeInstructions: fulfillmentType === 'trade' ? tradeInstructions : undefined,
       isFeatured: isShimmer,
       isDraft: false,
@@ -242,6 +260,47 @@ export const AdminAddItem: React.FC<AdminAddItemProps> = ({
           </div>
         </section>
 
+        {/* Additional Gallery Images (up to 2 more, 3 total with cover) + Video */}
+        <section className="bg-[#1C1F29] rounded-2xl p-5 border border-white/10 flex flex-col gap-4">
+          <label className="font-price text-xs text-[#8B90A0] uppercase font-bold">
+            Extra Photos (optional, up to 2) &amp; Video
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            {[0, 1].map((slot) => (
+              <div key={slot} className="flex flex-col gap-2">
+                <div className="w-full aspect-video rounded-xl overflow-hidden bg-[#11131a] border border-white/10 flex items-center justify-center">
+                  {galleryImages[slot] ? (
+                    <img src={galleryImages[slot]} alt={`Extra ${slot + 1}`} className="w-full h-full object-cover" />
+                  ) : (
+                    <ImageIcon className="w-5 h-5 text-[#4a4d59]" />
+                  )}
+                </div>
+                <label className="cursor-pointer text-center bg-[#282a31] hover:bg-[#ffb230]/20 text-[#ffd7a1] border border-white/10 px-2 py-1.5 rounded-lg text-[10px] font-price font-bold transition-all">
+                  Photo {slot + 2}
+                  <input type="file" accept="image/*" onChange={handleGalleryFileUpload(slot)} className="hidden" />
+                </label>
+              </div>
+            ))}
+          </div>
+
+          <div className="pt-2 border-t border-white/5">
+            <label className="font-price text-xs text-[#8B90A0] uppercase font-bold block mb-2">
+              Video Link (optional)
+            </label>
+            <input
+              type="text"
+              value={videoUrl}
+              onChange={(e) => setVideoUrl(e.target.value)}
+              placeholder="YouTube or direct .mp4 link..."
+              className="w-full bg-[#11131a] text-[#e2e2ec] border border-white/10 rounded-xl px-3 py-2 text-xs font-price focus:border-[#ffb230] outline-none"
+            />
+            <p className="mt-1.5 text-[10px] text-[#6b6f7d] leading-relaxed">
+              Paste a link (YouTube, or a direct video file URL) — don't upload the raw video file here, it's too large to store directly.
+            </p>
+          </div>
+        </section>
+
         {/* Basic Details */}
         <section className="bg-[#1C1F29] rounded-2xl p-5 border border-white/10 space-y-4">
           <div>
@@ -287,6 +346,7 @@ export const AdminAddItem: React.FC<AdminAddItemProps> = ({
                 <option value="evade">🏃‍♂️ Evade (រត់គេច)</option>
                 <option value="mm2">🗡️ MM2 (Murder Mystery)</option>
                 <option value="blade-ball">⚔️ Blade Ball (បាល់ដាវ)</option>
+                <option value="steal-egg">🥚 Steal an Egg (លួចស៊ុត)</option>
               </select>
             </div>
 

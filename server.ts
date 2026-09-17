@@ -13,7 +13,8 @@ import jwt from 'jsonwebtoken';
 import { validateUsername, UserRole } from './src/models/userModel';
 import { generateAuthToken, verifyAuth, requireAdmin, JWT_SECRET } from './src/middleware/authMiddleware';
 import { Order } from './src/types';
-import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase } from './src/lib/remoteDb';
+import { isRemotePersistenceEnabled, loadRemoteDatabase, saveRemoteDatabase, createRemoteBackup, listRemoteBackups, loadRemoteBackup } from './src/lib/remoteDb';
+import { isAdminAuthEnabled, createTelegramCustomToken } from './src/lib/firebaseAdmin';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -158,10 +159,12 @@ app.get(['/health', '/api/health'], (req, res) => {
 });
 
 // Pull the latest shared data from Firestore (if configured) before handling
-// the first /api request on this serverless instance. No-op when remote
-// persistence isn't configured.
+// each /api request. Mutating requests force a fresh read, because writing
+// from a stale copy would overwrite another instance's data. No-op when
+// remote persistence isn't configured.
 app.use('/api', (req, res, next) => {
-  ensureDbHydrated().then(next).catch(next);
+  const isMutating = req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS';
+  ensureDbHydrated(isMutating).then(() => next()).catch(() => next());
 });
 
 // Security Middleware: Inspects all incoming /api traffic for suspicious scanner patterns and tracks per-IP velocity
@@ -296,6 +299,10 @@ interface StoreDatabase {
   sentEmails?: SentEmailRecord[];
   topupRequests?: any[];
   activityLogs?: AdminActivityLog[];
+  // Customer Telegram-login: maps lowercase Telegram @username -> their chat info
+  telegramLinks?: Record<string, { chatId: number; username: string; linkedAt: string }>;
+  // Short-lived 6-digit login codes, keyed by lowercase Telegram @username
+  telegramLoginCodes?: Record<string, { code: string; expiresAt: number; attempts: number }>;
 }
 
 function loadDatabase(): StoreDatabase {
@@ -401,6 +408,11 @@ async function saveDatabase(db: StoreDatabase): Promise<boolean> {
   // also persist there so data survives across cold starts/instances.
   if (isRemotePersistenceEnabled()) {
     const remoteOk = await saveRemoteDatabase(db as unknown as Record<string, any>);
+    if (remoteOk) {
+      // Our in-memory copy is now the authoritative one; no need to re-read it
+      // on the very next request.
+      lastHydratedAt = Date.now();
+    }
     return localOk && remoteOk;
   }
 
@@ -408,42 +420,174 @@ async function saveDatabase(db: StoreDatabase): Promise<boolean> {
 }
 
 let db = loadDatabase();
-let remoteHydrationDone = false;
+let lastHydratedAt = 0;
+let hydrationInFlight: Promise<void> | null = null;
+
+// How long a hydrated copy is considered fresh enough for read-only requests.
+const HYDRATION_TTL_MS = 3000;
 
 /**
- * On a fresh serverless instance, the in-memory `db` above only reflects
- * whatever was last written to the LOCAL file in *this* instance (which may
- * be empty/stale on Vercel). If Firestore persistence is configured, pull the
- * latest shared copy in before handling the first request of this instance.
- * This is a no-op when remote persistence isn't configured.
+ * Pulls the latest shared database from Firestore into this instance's memory.
+ *
+ * Why this must run repeatedly (not just once at cold start):
+ * Vercel runs several serverless instances concurrently, each with its own
+ * in-memory `db`. If instance A hydrated only at startup, and instance B then
+ * saved a new order, A would still hold the stale copy -- and A's next write
+ * would overwrite Firestore with that stale data, silently destroying B's
+ * order. Re-reading before writes keeps instances converged.
+ *
+ * `force` is used for mutating requests, where a stale read means lost data.
+ * Read-only requests reuse a copy up to HYDRATION_TTL_MS old to avoid hammering
+ * Firestore on every page load.
+ *
+ * No-op when remote persistence isn't configured (local dev / Railway).
  */
-async function ensureDbHydrated(): Promise<void> {
-  if (remoteHydrationDone) return;
-  remoteHydrationDone = true; // set eagerly so concurrent requests don't all trigger a fetch
-
+async function ensureDbHydrated(force = false): Promise<void> {
   if (!isRemotePersistenceEnabled()) return;
 
-  try {
-    const remote = await loadRemoteDatabase();
-    if (remote) {
-      db = remote as StoreDatabase;
-    } else {
-      // Nothing in Firestore yet (first-ever boot with remote persistence enabled) --
-      // seed it with whatever we have locally so future instances find it.
-      await saveRemoteDatabase(db as unknown as Record<string, any>);
+  if (!force && Date.now() - lastHydratedAt < HYDRATION_TTL_MS) return;
+
+  // Collapse concurrent hydrations on this instance into a single fetch.
+  if (hydrationInFlight) return hydrationInFlight;
+
+  hydrationInFlight = (async () => {
+    try {
+      const remote = await loadRemoteDatabase();
+      if (remote) {
+        db = remote as StoreDatabase;
+      } else {
+        // Nothing in Firestore yet (first-ever boot with remote persistence
+        // enabled) -- seed it with whatever we have locally.
+        await saveRemoteDatabase(db as unknown as Record<string, any>);
+      }
+      lastHydratedAt = Date.now();
+    } catch (err) {
+      console.error('[remoteDb] Hydration failed, continuing with local data:', err);
+    } finally {
+      hydrationInFlight = null;
     }
-  } catch (err) {
-    console.error('[remoteDb] Hydration failed, continuing with local data:', err);
-  }
+  })();
+
+  return hydrationInFlight;
 }
 
 // ======================== API ROUTES ========================
 
 // 1. Full State Sync
+// Strips fields that should never be visible to an unauthenticated visitor
+// (bot tokens that grant full control of the bots, and password hashes/salts)
+// from a copy of the database. Used by public-facing read endpoints.
+function redactSecretsForPublicState(source: StoreDatabase): any {
+  const { telegramBotToken, telegramAdminBotToken, verificationBotToken, ...publicSettings } = source.settings as any;
+  const publicUsers = Array.isArray(source.users)
+    ? source.users.map((u: any) => {
+        const { passwordHash, salt, ...rest } = u;
+        return rest;
+      })
+    : source.users;
+
+  return { ...source, settings: publicSettings, users: publicUsers };
+}
+
 app.get('/api/state', (req, res) => {
+  // This endpoint has no auth check (the storefront needs it to load for
+  // anonymous visitors), so it must never include bot tokens or password
+  // hashes -- previously it returned the raw database, exposing both to
+  // anyone who opened the network tab.
+  let isAdminRequest = false;
+  try {
+    const authHeader = req.headers.authorization || (req.headers['x-admin-token'] as string);
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader;
+    if (token) {
+      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      isAdminRequest = decoded?.role === 'admin';
+    }
+  } catch {
+    // Invalid/missing token -- treat as a normal public request, don't error.
+  }
+
   res.json({
     success: true,
-    data: db,
+    data: isAdminRequest ? db : redactSecretsForPublicState(db),
+  });
+});
+
+// Masks a username for public display, e.g. "testbuyer2" -> "te*****r2"
+function maskUsername(name: string): string {
+  const clean = (name || 'Player').trim();
+  if (clean.length <= 3) return clean[0] + '***';
+  return `${clean.slice(0, 2)}${'*'.repeat(Math.max(3, clean.length - 4))}${clean.slice(-2)}`;
+}
+
+// Live activity feed: recent completed purchases + top-ups, for a "recent activity"
+// ticker on the storefront. Usernames are masked for privacy.
+app.get('/api/activity/live-feed', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 15, 50);
+
+  const purchaseEvents = (db.orders || [])
+    .filter((o) => o.status === 'delivered')
+    .map((o) => ({
+      type: 'purchase' as const,
+      username: maskUsername(o.buyerUsername || o.customerName || 'Player'),
+      label: o.product?.title || o.productName || 'an item',
+      amountUSD: o.totalUSD || 0,
+      timestamp: o.timestamp || Date.parse(o.date || '') || Date.now(),
+    }));
+
+  const topupEvents = (db.topupRequests || [])
+    .filter((t: any) => t.status === 'delivered')
+    .map((t: any) => ({
+      type: 'topup' as const,
+      username: maskUsername(t.customerUsername || 'Player'),
+      label: 'Balance Top-Up',
+      amountUSD: t.totalCreditUSD || t.amountUSD || 0,
+      timestamp: t.timestamp || Date.parse(t.createdAt || '') || Date.now(),
+    }));
+
+  const feed = [...purchaseEvents, ...topupEvents]
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, limit);
+
+  res.json({ success: true, feed });
+});
+
+// Leaderboard: aggregates total spend per user from delivered orders (top buyers)
+// and delivered top-ups (top top-up users), separately. Usernames are masked
+// the same way as the live feed, for privacy.
+app.get('/api/activity/leaderboard', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 10, 25);
+
+  const buyerTotals = new Map<string, number>();
+  for (const o of db.orders || []) {
+    if (o.status !== 'delivered') continue;
+    const key = (o.buyerUsername || o.customerName || 'Player').trim();
+    if (!key) continue;
+    buyerTotals.set(key, (buyerTotals.get(key) || 0) + (o.totalUSD || 0));
+  }
+
+  const topupTotals = new Map<string, number>();
+  for (const t of (db.topupRequests || []) as any[]) {
+    if (t.status !== 'delivered') continue;
+    const key = (t.customerUsername || 'Player').trim();
+    if (!key) continue;
+    const amount = t.totalCreditUSD || t.amountUSD || 0;
+    topupTotals.set(key, (topupTotals.get(key) || 0) + amount);
+  }
+
+  const toRankedList = (totals: Map<string, number>) =>
+    Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([username, totalUSD], index) => ({
+        rank: index + 1,
+        username: maskUsername(username),
+        totalUSD: Number(totalUSD.toFixed(2)),
+      }));
+
+  res.json({
+    success: true,
+    topBuyers: toRankedList(buyerTotals),
+    topTopupUsers: toRankedList(topupTotals),
   });
 });
 
@@ -829,6 +973,139 @@ app.post('/api/security/toggle-under-attack', (req, res) => {
 });
 
 // Helper to dispatch official welcome email
+/**
+ * Low-level SMTP sender shared by all transactional emails (welcome, receipt, etc).
+ * Falls back to a "simulated/logged" mode when SMTP env vars aren't configured,
+ * so nothing throws in local dev -- it just logs instead of actually sending.
+ */
+async function sendSmtpEmail(
+  to: string,
+  subject: string,
+  html: string
+): Promise<{ sent: boolean; deliveryMode: string; messageId: string; error?: string }> {
+  let messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpPort = Number(process.env.SMTP_PORT) || 587;
+  const fromAddress = process.env.SMTP_FROM || 'Uchiro Store <noreply@uchiro.store>';
+
+  if (!smtpUser || !smtpPass) {
+    console.log(`[Email Service] Email to ${to} processed (simulated mode: SMTP credentials not set).`);
+    return { sent: true, deliveryMode: 'simulated_logged', messageId };
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: smtpHost || 'smtp.gmail.com',
+      port: smtpPort,
+      secure: smtpPort === 465,
+      connectionTimeout: 8000,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+
+    const info = await transporter.sendMail({ from: fromAddress, to, subject, html });
+    messageId = info.messageId || messageId;
+    console.log(`[Email Service] Live SMTP email sent to ${to}. Message ID: ${messageId}`);
+    return { sent: true, deliveryMode: 'smtp', messageId };
+  } catch (err: any) {
+    console.warn(`[Email Service] SMTP transport failed (${err.message}). Falling back to logged delivery mode.`);
+    return { sent: true, deliveryMode: 'smtp_fallback_logged', messageId, error: err.message };
+  }
+}
+
+function recordSentEmail(record: Omit<SentEmailRecord, 'id' | 'sentAt'> & { id?: string }) {
+  if (!Array.isArray(db.sentEmails)) db.sentEmails = [];
+  db.sentEmails.unshift({
+    id: record.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    sentAt: new Date().toISOString(),
+    ...record,
+  } as SentEmailRecord);
+  if (db.sentEmails.length > 100) db.sentEmails = db.sentEmails.slice(0, 100);
+}
+
+/**
+ * Look up a buyer's registered email from an order (orders don't store email
+ * directly -- only a username), then send them a purchase receipt.
+ * Safe to call for every order: silently does nothing if no email is on file,
+ * and never throws (a failed receipt must never block an order approval).
+ */
+async function sendOrderReceiptEmail(order: Order): Promise<void> {
+  try {
+    const lookupName = (order.buyerUsername || order.customerName || '').trim().toLowerCase();
+    if (!lookupName || !Array.isArray(db.users)) return;
+
+    const buyer = db.users.find((u: any) => (u.username || '').toLowerCase() === lookupName);
+    const email = buyer?.email;
+    if (!email || typeof email !== 'string' || !email.includes('@')) return;
+
+    const price = order.totalUSD || 0;
+    const productTitle = order.product?.title || order.productName || 'Item';
+    const orderDate = order.date || new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Phnom_Penh' });
+    const warrantyDays = order.credentialsDelivered?.warrantyDurationDays;
+
+    const subject = `🧾 Receipt for Order ${order.id} - Uchiro Store`;
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Order Receipt</title></head>
+<body style="margin:0;padding:0;background-color:#0c0e14;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#e2e2ec;">
+  <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#0c0e14;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width:580px;background-color:#13151f;border-radius:18px;border:1px solid rgba(62,207,142,0.28);overflow:hidden;box-shadow:0 12px 36px rgba(0,0,0,0.6);">
+        <tr><td style="background:linear-gradient(90deg,#3ECF8E 0%,#ffd7a1 50%,#3ECF8E 100%);height:5px;line-height:5px;font-size:5px;">&nbsp;</td></tr>
+        <tr><td style="padding:28px 24px 14px 24px;text-align:center;background-color:#10121a;">
+          <span style="font-size:17px;font-weight:800;color:#3ECF8E;letter-spacing:2px;text-transform:uppercase;">✓ Payment Confirmed</span>
+          <p style="margin:8px 0 0 0;font-size:12px;color:#8b90a0;">Uchiro Store Cambodia</p>
+        </td></tr>
+        <tr><td style="padding:24px 28px;">
+          <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#161822;border-radius:12px;border:1px solid rgba(255,255,255,0.06);">
+            <tr><td style="padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Order ID</div>
+              <div style="font-size:14px;color:#ffffff;font-weight:700;">${escapeHtml(order.id)}</div>
+            </td></tr>
+            <tr><td style="padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Item</div>
+              <div style="font-size:14px;color:#ffffff;font-weight:700;">${escapeHtml(productTitle)}</div>
+            </td></tr>
+            <tr><td style="padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Amount Paid</div>
+              <div style="font-size:18px;color:#3ECF8E;font-weight:800;">$${price.toFixed(2)} USD</div>
+            </td></tr>
+            <tr><td style="padding:16px 18px;">
+              <div style="font-size:11px;color:#8b90a0;text-transform:uppercase;letter-spacing:0.5px;">Date</div>
+              <div style="font-size:14px;color:#ffffff;">${escapeHtml(orderDate)}</div>
+            </td></tr>
+          </table>
+          ${warrantyDays ? `<p style="margin:16px 0 0 0;font-size:12px;color:#8b90a0;">🛡️ Covered by a ${warrantyDays}-day warranty. Contact support if anything goes wrong.</p>` : ''}
+        </td></tr>
+        <tr><td style="padding:20px 24px;background-color:#0e1017;border-top:1px solid rgba(255,255,255,0.06);text-align:center;">
+          <p style="margin:0 0 8px 0;font-size:12px;color:#8b90a0;">Questions about this order?</p>
+          <a href="https://t.me/Noreakyout" target="_blank" style="color:#ffb230;text-decoration:none;font-weight:600;font-size:13px;">💬 Support: @Noreakyout</a>
+          <p style="margin:14px 0 0 0;font-size:11px;color:#5a5e6d;">&copy; ${new Date().getFullYear()} Uchiro Store Cambodia. All rights reserved.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+    const result = await sendSmtpEmail(email, subject, htmlContent);
+    recordSentEmail({
+      type: 'receipt',
+      to: email,
+      username: lookupName,
+      subject,
+      deliveryMode: result.deliveryMode,
+      success: result.sent,
+      error: result.error,
+    });
+  } catch (err: any) {
+    // A receipt email failing must never block/undo an order approval.
+    console.error('[Email Service] Failed to send order receipt email:', err?.message || err);
+  }
+}
+
 async function dispatchWelcomeEmail({
   email,
   username,
@@ -1087,7 +1364,254 @@ async function dispatchWelcomeEmail({
   };
 }
 
-// Auto Send Welcome Email Endpoint
+// ==================== BACKUP & RESTORE ====================
+
+// Download the entire database as a JSON file (works with or without Firestore).
+app.get('/api/admin/backup/export', (req, res) => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="uchiro-backup-${stamp}.json"`);
+  res.send(JSON.stringify(db, null, 2));
+});
+
+// Create a timestamped snapshot in Firestore.
+app.post('/api/admin/backup/create', async (req, res) => {
+  if (!isRemotePersistenceEnabled()) {
+    return res.status(400).json({
+      success: false,
+      error: 'Snapshots require Firestore. Set FIREBASE_SERVICE_ACCOUNT, or use /api/admin/backup/export to download a file instead.',
+    });
+  }
+  const label = typeof req.body?.label === 'string' ? req.body.label.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) : 'manual';
+  const result = await createRemoteBackup(db as unknown as Record<string, any>, label || 'manual');
+  res.json(result);
+});
+
+// List available snapshots.
+app.get('/api/admin/backup/list', async (req, res) => {
+  if (!isRemotePersistenceEnabled()) {
+    return res.json({ success: true, backups: [], remoteEnabled: false });
+  }
+  const backups = await listRemoteBackups();
+  res.json({ success: true, backups, remoteEnabled: true });
+});
+
+// Restore a snapshot. Takes a safety snapshot of current state first, so a
+// mistaken restore can itself be undone.
+app.post('/api/admin/backup/restore', async (req, res) => {
+  const { backupId } = req.body || {};
+  if (!backupId || typeof backupId !== 'string') {
+    return res.status(400).json({ success: false, error: 'backupId is required' });
+  }
+  if (!isRemotePersistenceEnabled()) {
+    return res.status(400).json({ success: false, error: 'Snapshots require Firestore to be configured' });
+  }
+
+  const snapshot = await loadRemoteBackup(backupId);
+  if (!snapshot) {
+    return res.status(404).json({ success: false, error: 'Backup not found' });
+  }
+
+  await createRemoteBackup(db as unknown as Record<string, any>, 'pre-restore');
+
+  db = snapshot as StoreDatabase;
+  await saveDatabase(db);
+
+  await logActivity({
+    actionType: 'database_restore',
+    entityType: 'system',
+    entityId: backupId,
+    entityTitle: 'Database Restore',
+    details: `Database restored from backup: ${backupId}`,
+    detailsKhmer: `បានស្ដារទិន្នន័យពីច្បាប់ចម្លង៖ ${backupId}`,
+    adminId: (req.headers['x-admin-id'] as string) || 'admin',
+    badgeColor: '#ffb230',
+  });
+
+  res.json({ success: true, restoredFrom: backupId });
+});
+
+// ==================== CUSTOMER TELEGRAM LOGIN ====================
+// Separate from the admin bot's polling-based command system (which only runs
+// on a long-lived server, e.g. local/Railway -- NOT on Vercel). This uses a
+// webhook instead, which works correctly on Vercel: Telegram POSTs each
+// update directly to this endpoint, so there's no persistent loop required.
+
+async function sendCustomerBotMsg(chatId: number | string, text: string): Promise<void> {
+  const token = db.settings.telegramBotToken;
+  if (!token) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    });
+  } catch (err) {
+    console.error('[customerBot] Failed to send message:', err);
+  }
+}
+
+// Telegram webhook target for the customer-facing store bot. Only handles
+// /start (to link the account) -- this bot is not the admin command bot.
+app.post('/api/telegram/customer-webhook', async (req, res) => {
+  // Respond fast; Telegram doesn't need to wait for our processing.
+  res.status(200).json({ ok: true });
+
+  try {
+    const update = req.body;
+    const msg = update?.message;
+    if (!msg || !msg.text) return;
+
+    const chatId = msg.chat?.id;
+    const telegramUsername = (msg.from?.username || '').toLowerCase();
+    if (!chatId) return;
+
+    if (msg.text.trim().toLowerCase().startsWith('/start')) {
+      if (!telegramUsername) {
+        await sendCustomerBotMsg(
+          chatId,
+          `👋 Welcome to Uchiro Store!\n\nTo use Telegram login, you need a Telegram *username* set first (Settings → Username in the Telegram app), then send /start again.`
+        );
+        return;
+      }
+
+      if (!db.telegramLinks) db.telegramLinks = {};
+      db.telegramLinks[telegramUsername] = {
+        chatId,
+        username: telegramUsername,
+        linkedAt: new Date().toISOString(),
+      };
+      await saveDatabase(db);
+
+      await sendCustomerBotMsg(
+        chatId,
+        `✅ *Linked!*\n\nYour Telegram account (@${telegramUsername}) is now connected to Uchiro Store.\n\nGo back to the site, choose "Login with Telegram", enter your username, and tap "Get Code" -- your login code will arrive right here.`
+      );
+    }
+  } catch (err) {
+    console.error('[customerBot] Webhook handling error:', err);
+  }
+});
+
+// One-time setup: registers the webhook above with Telegram for the store bot.
+// Call this once after deploying (or whenever the domain/bot token changes).
+app.post('/api/telegram/customer-webhook/register', async (req, res) => {
+  const token = db.settings.telegramBotToken;
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'Set the store bot token in Admin Settings first.' });
+  }
+
+  const baseUrl = getAppBaseUrl(req);
+  const webhookUrl = `${baseUrl}/api/telegram/customer-webhook`;
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl }),
+    });
+    const data = await response.json();
+    res.json({ success: !!data.ok, webhookUrl, telegramResponse: data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+// Check whether a Telegram username is already linked (lets the frontend show
+// "Get Code" directly vs. "open the bot to link first").
+app.get('/api/auth/telegram/link-status', (req, res) => {
+  const username = String(req.query.username || '').trim().toLowerCase().replace(/^@/, '');
+  const linked = !!(db.telegramLinks && db.telegramLinks[username]);
+  res.json({ success: true, linked });
+});
+
+const TELEGRAM_CODE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const TELEGRAM_CODE_MAX_ATTEMPTS = 5;
+const TELEGRAM_CODE_RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
+
+// Sends a fresh 6-digit login code to an already-linked Telegram user.
+app.post('/api/auth/telegram/request-code', async (req, res) => {
+  if (!isAdminAuthEnabled()) {
+    return res.status(400).json({
+      success: false,
+      error: 'Telegram login is not fully configured yet (FIREBASE_SERVICE_ACCOUNT is not set on the server).',
+    });
+  }
+
+  const username = String(req.body?.username || '').trim().toLowerCase().replace(/^@/, '');
+  if (!username) {
+    return res.status(400).json({ success: false, error: 'Telegram username is required' });
+  }
+
+  const link = db.telegramLinks?.[username];
+  if (!link) {
+    return res.json({ success: false, needsLink: true, error: 'This Telegram account is not linked yet.' });
+  }
+
+  if (!db.telegramLoginCodes) db.telegramLoginCodes = {};
+  const existing = db.telegramLoginCodes[username];
+  if (existing && existing.expiresAt - TELEGRAM_CODE_TTL_MS + TELEGRAM_CODE_RESEND_COOLDOWN_MS > Date.now()) {
+    const waitSeconds = Math.ceil((existing.expiresAt - TELEGRAM_CODE_TTL_MS + TELEGRAM_CODE_RESEND_COOLDOWN_MS - Date.now()) / 1000);
+    return res.json({ success: false, error: `Please wait ${waitSeconds}s before requesting another code.` });
+  }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  db.telegramLoginCodes[username] = { code, expiresAt: Date.now() + TELEGRAM_CODE_TTL_MS, attempts: 0 };
+  await saveDatabase(db);
+
+  await sendCustomerBotMsg(
+    link.chatId,
+    `🔐 *Your Uchiro Store login code:*\n\n*${code}*\n\nExpires in 5 minutes. Never share this code with anyone.`
+  );
+
+  res.json({ success: true });
+});
+
+// Verifies a 6-digit code and, on success, issues a Firebase custom token the
+// frontend exchanges via signInWithCustomToken() to complete login.
+app.post('/api/auth/telegram/verify-code', async (req, res) => {
+  const username = String(req.body?.username || '').trim().toLowerCase().replace(/^@/, '');
+  const code = String(req.body?.code || '').trim();
+
+  if (!username || !code) {
+    return res.status(400).json({ success: false, error: 'Username and code are required' });
+  }
+
+  const entry = db.telegramLoginCodes?.[username];
+  if (!entry) {
+    return res.json({ success: false, error: 'No active code for this account. Request a new one.' });
+  }
+  if (Date.now() > entry.expiresAt) {
+    delete db.telegramLoginCodes![username];
+    await saveDatabase(db);
+    return res.json({ success: false, error: 'Code expired. Request a new one.' });
+  }
+  if (entry.attempts >= TELEGRAM_CODE_MAX_ATTEMPTS) {
+    delete db.telegramLoginCodes![username];
+    await saveDatabase(db);
+    return res.json({ success: false, error: 'Too many attempts. Request a new code.' });
+  }
+
+  if (entry.code !== code) {
+    entry.attempts += 1;
+    await saveDatabase(db);
+    return res.json({ success: false, error: `Incorrect code (${TELEGRAM_CODE_MAX_ATTEMPTS - entry.attempts} attempts left).` });
+  }
+
+  // Correct code -- but don't consume it yet, in case token creation fails
+  // transiently below (the user shouldn't have to start over for that).
+  const result = await createTelegramCustomToken(username);
+  if (!result.success) {
+    return res.status(500).json(result);
+  }
+
+  delete db.telegramLoginCodes![username];
+  await saveDatabase(db);
+
+  res.json({ success: true, token: result.token, username });
+});
+
+
 app.post('/api/auth/send-welcome-email', async (req, res) => {
   const { email, username, referralCode } = req.body;
   if (!email || typeof email !== 'string' || !email.includes('@')) {
@@ -1550,6 +2074,7 @@ app.put('/api/orders/:id', async (req, res) => {
       newValue: 'delivered',
       badgeColor: '#3ECF8E',
     });
+    await sendOrderReceiptEmail(order);
   } else if (status === 'rejected') {
     await logActivity({
       actionType: 'order_reject',
@@ -1665,17 +2190,35 @@ app.delete('/api/activity-logs', async (req, res) => {
 
 // 5. Store Settings API (KHQR, Logo, Songs, Branding)
 app.get('/api/settings', (req, res) => {
-  res.json({ success: true, settings: db.settings });
+  // These grant full control of the bot (send messages, read all traffic) --
+  // never expose them to an unauthenticated GET. Everything else in settings
+  // (store name, announcement, KHQR merchant info, etc.) is meant to be public.
+  const { telegramBotToken, telegramAdminBotToken, verificationBotToken, ...publicSettings } = db.settings as any;
+  res.json({ success: true, settings: publicSettings });
 });
 
 app.put('/api/settings', async (req, res) => {
   const updatedSettings = req.body;
-  const tokenChanged = updatedSettings.telegramBotToken && updatedSettings.telegramBotToken !== db.settings.telegramBotToken;
+  // Either token changing should re-register commands and restart the poller.
+  // Admin commands/approval buttons run on the admin bot when one is set, so
+  // watching only the store token would leave a newly-set admin bot inactive
+  // until the next server restart.
+  const tokenChanged =
+    (updatedSettings.telegramBotToken && updatedSettings.telegramBotToken !== db.settings.telegramBotToken) ||
+    (updatedSettings.telegramAdminBotToken && updatedSettings.telegramAdminBotToken !== db.settings.telegramAdminBotToken);
   db.settings = { ...db.settings, ...updatedSettings };
   await saveDatabase(db);
-  if (tokenChanged && db.settings.telegramBotToken) {
-    registerTelegramBotCommands(db.settings.telegramBotToken).catch(() => {});
-    startTelegramPoller().catch(() => {});
+  const activeAdminToken = getAdminBotToken();
+  if (tokenChanged && activeAdminToken) {
+    // Stop the existing poll loop so it restarts against the new token.
+    isPollingActive = false;
+    // Update offsets are per-bot, so carrying the old one over to a different
+    // bot could silently skip its pending updates.
+    pollingOffset = 0;
+    registerTelegramBotCommands(activeAdminToken).catch(() => {});
+    setTimeout(() => {
+      startTelegramPoller().catch(() => {});
+    }, 500);
   }
   res.json({ success: true, settings: db.settings });
 });
@@ -2555,7 +3098,7 @@ app.post('/api/khqr/check-payment', async (req, res) => {
       await saveDatabase(db);
 
       // Send Telegram Topup Alert if enabled
-      if (db.settings.topupAlertsEnabled && db.settings.telegramBotToken) {
+      if (db.settings.topupAlertsEnabled && getAdminBotToken()) {
         const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
         const tgText = `💰 *[UCHIRO STORE] KHQR TOP-UP RECEIVED!*\n\n` +
           `👤 *Customer:* ${buyerUsername || db.userProfile.username || 'Customer'}\n` +
@@ -2565,7 +3108,7 @@ app.post('/api/khqr/check-payment', async (req, res) => {
           `💳 *New Balance:* $${db.userProfile.balanceUSD.toFixed(2)} USD\n` +
           `⏰ *Time:* ${now}`;
 
-        fetch(`https://api.telegram.org/bot${db.settings.telegramBotToken}/sendMessage`, {
+        fetch(`https://api.telegram.org/bot${getAdminBotToken()}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2828,6 +3371,7 @@ async function approveOrderCore(order: Order, adminSource = "Admin Telegram Bot"
     };
   }
   await saveDatabase(db);
+  await sendOrderReceiptEmail(order);
   return order;
 }
 
@@ -2871,8 +3415,24 @@ async function approveTopupCore(topup: any): Promise<{ topup: any; totalCredit: 
   return { topup, totalCredit };
 }
 
+/**
+ * Resolves which bot token to use for ADMIN-facing traffic (order/top-up alerts,
+ * approval buttons, /approve-style commands).
+ *
+ * If a dedicated admin bot is configured, admin traffic goes through it, keeping
+ * the customer-facing store bot separate. If not, everything falls back to the
+ * store bot exactly as before -- so existing single-bot setups are unaffected.
+ */
+function getAdminBotToken(): string | undefined {
+  const adminToken = db.settings.telegramAdminBotToken;
+  if (adminToken && adminToken.includes(':') && !adminToken.includes('YOUR_BOT_TOKEN')) {
+    return adminToken;
+  }
+  return db.settings.telegramBotToken;
+}
+
 async function sendTelegramMsg(chatId: string | number, text: string, replyMarkup?: any) {
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) return null;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -2894,7 +3454,7 @@ async function sendTelegramMsg(chatId: string | number, text: string, replyMarku
 }
 
 async function editTelegramMsg(chatId: string | number, messageId: number, text: string, replyMarkup?: any) {
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) return null;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
@@ -2917,7 +3477,7 @@ async function editTelegramMsg(chatId: string | number, messageId: number, text:
 }
 
 async function answerTelegramCallback(callbackQueryId: string, text: string, showAlert = false) {
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) return null;
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
@@ -2937,7 +3497,7 @@ async function answerTelegramCallback(callbackQueryId: string, text: string, sho
 }
 
 async function registerTelegramBotCommands(customToken?: string) {
-  const token = customToken || db.settings.telegramBotToken;
+  const token = customToken || getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) {
     return { success: false, error: 'Valid Telegram Bot Token is required' };
   }
@@ -3576,7 +4136,7 @@ let pollingOffset = 0;
 
 async function startTelegramPoller() {
   if (isPollingActive) return;
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   if (!token || !token.includes(':') || token.includes('YOUR_BOT_TOKEN')) {
     return;
   }
@@ -3587,7 +4147,7 @@ async function startTelegramPoller() {
 
   (async () => {
     while (isPollingActive) {
-      const currentToken = db.settings.telegramBotToken;
+      const currentToken = getAdminBotToken();
       if (!currentToken || !currentToken.includes(':') || currentToken.includes('YOUR_BOT_TOKEN')) {
         await new Promise((r) => setTimeout(r, 5000));
         continue;
@@ -3632,7 +4192,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
 // Register Bot Slash Commands with Telegram API (Bot Menu)
 app.post('/api/telegram/register-commands', async (req, res) => {
   const { botToken } = req.body || {};
-  const token = botToken || db.settings.telegramBotToken;
+  const token = botToken || getAdminBotToken();
   const result = await registerTelegramBotCommands(token);
   res.json(result);
 });
@@ -3640,7 +4200,7 @@ app.post('/api/telegram/register-commands', async (req, res) => {
 // 10. Telegram Bot Alert & Webhook Proxy
 app.post('/api/telegram/test-alert', async (req, res) => {
   const { botToken, chatId, alertType, customMessage } = req.body;
-  const token = botToken || db.settings.telegramBotToken;
+  const token = botToken || getAdminBotToken();
   const targetChat = chatId || db.settings.telegramAdminChatId || db.settings.telegramChannelId;
 
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
@@ -3720,7 +4280,7 @@ app.post('/api/telegram/send-order-alert', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Order required' });
   }
 
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
@@ -3811,7 +4371,7 @@ app.post('/api/telegram/resend-order-alert/:id', async (req, res) => {
     return res.status(404).json({ success: false, error: 'Order not found' });
   }
 
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
@@ -3971,7 +4531,7 @@ app.post('/api/slips/submit', async (req, res) => {
   }
 
   const appBaseUrl = getAppBaseUrl(req);
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' });
 
@@ -4231,7 +4791,7 @@ app.get('/api/slips/approve', async (req, res) => {
   }
 
   // Telegram alert confirming approval
-  const token = db.settings.telegramBotToken;
+  const token = getAdminBotToken();
   const targetChat = db.settings.telegramAdminChatId || db.settings.telegramChannelId || '@uchirostore';
   if (token && targetChat && isApproved) {
     fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -4581,7 +5141,7 @@ function injectDynamicSocialTags(html: string, req: express.Request): string {
     const price = typeof product.priceUSD === 'number' ? product.priceUSD : (product.price || 0);
     const priceFormatted = price.toFixed(2);
     const isAvailable = !product.isSold && (product.stock ?? 1) > 0;
-    const productUrl = `${protocol}://${host}/?product=${encodeURIComponent(product.id)}`;
+    const productUrl = `${protocol}://${host}/product/${encodeURIComponent(product.id)}`;
     const productTitle = escapeHtml(
       product.titleKhmer
         ? `${product.title} (${product.titleKhmer}) - $${priceFormatted} | Uchiro Store`
@@ -4686,6 +5246,28 @@ function injectDynamicSocialTags(html: string, req: express.Request): string {
   }
 }
 
+// Serve the built frontend + inject per-product Open Graph/Twitter tags server-side.
+// This must run OUTSIDE startServer() because startServer() is skipped entirely on
+// Vercel (see the `if (!process.env.VERCEL) startServer()` guard below) -- without
+// this block registered here, Telegram/Facebook link previews for shared product
+// URLs always showed the generic store title/image instead of the product's own,
+// since those crawlers don't execute the client-side JS that normally sets these tags.
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  const indexHtmlPath = path.join(distPath, 'index.html');
+  app.use(express.static(distPath, { index: false }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    try {
+      const template = fs.readFileSync(indexHtmlPath, 'utf-8');
+      const finalHtml = injectDynamicSocialTags(template, req);
+      res.status(200).set({ 'Content-Type': 'text/html' }).end(finalHtml);
+    } catch (err) {
+      res.sendFile(indexHtmlPath);
+    }
+  });
+}
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -4718,21 +5300,9 @@ async function startServer() {
     });
 
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    const indexHtmlPath = path.join(distPath, 'index.html');
-    app.use(express.static(distPath));
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) return next();
-      try {
-        const template = fs.readFileSync(indexHtmlPath, 'utf-8');
-        const finalHtml = injectDynamicSocialTags(template, req);
-        res.status(200).set({ 'Content-Type': 'text/html' }).end(finalHtml);
-      } catch (err) {
-        res.sendFile(indexHtmlPath);
-      }
-    });
   }
+  // Production static+OG serving is registered above, outside this function,
+  // so it also runs on Vercel (which never calls startServer() at all).
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Uchiro Store Full-Stack Server running on port ${PORT}`);

@@ -110,6 +110,18 @@ const LINE_2_CATEGORIES: CategoryItem[] = [
     borderColor: 'border-[#8B5CF6]/50',
     bgGradient: 'from-[#1e162b] to-[#131524]',
   },
+  {
+    id: 'steal-egg',
+    name: 'Steal an Egg',
+    nameKhmer: 'លួចស៊ុត',
+    emoji: '🥚',
+    secondaryEmoji: '🐔',
+    accentColor: '#EAB308',
+    glowColor: 'rgba(234, 179, 8, 0.25)',
+    badgeBg: 'bg-gradient-to-br from-[#EAB308]/25 via-[#F59E0B]/15 to-[#84CC16]/15',
+    borderColor: 'border-[#EAB308]/50',
+    bgGradient: 'from-[#26210f] to-[#151724]',
+  },
 ];
 
 export const CategoryGrid: React.FC<CategoryGridProps> = ({
@@ -219,7 +231,7 @@ export const CategoryGrid: React.FC<CategoryGridProps> = ({
 
         <div className="flex items-center gap-1 font-price text-[10px] text-[#8B90A0]">
           <Sparkles className="w-3 h-3 text-[#ffb230]" />
-          <span>7 {lang === 'KM' ? 'ប្រភេទ' : 'Categories'}</span>
+          <span>8 {lang === 'KM' ? 'ប្រភេទ' : 'Categories'}</span>
         </div>
       </div>
 
@@ -230,8 +242,8 @@ export const CategoryGrid: React.FC<CategoryGridProps> = ({
           {LINE_1_CATEGORIES.map(renderCategoryButton)}
         </div>
 
-        {/* Line 2: 3 Specialized Game Categories (Evade, MM2, Blade Ball) */}
-        <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+        {/* Line 2: 4 Specialized Game Categories (Evade, MM2, Blade Ball, Steal an Egg) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2">
           {LINE_2_CATEGORIES.map(renderCategoryButton)}
         </div>
       </div>

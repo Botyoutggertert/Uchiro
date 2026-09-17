@@ -62,6 +62,7 @@ export const AdminEditProductModal: React.FC<AdminEditProductModalProps> = ({
   const [imageUrl, setImageUrl] = useState(product.image || '');
   const [galleryImages, setGalleryImages] = useState<string[]>(product.galleryImages || []);
   const [newGalleryUrl, setNewGalleryUrl] = useState('');
+  const [videoUrl, setVideoUrl] = useState(product.videoUrl || '');
 
   // Account Specifications (Like in Store)
   const [levelRank, setLevelRank] = useState(product.accountSpecs?.levelRank || 'Max Level (2550)');
@@ -153,6 +154,7 @@ export const AdminEditProductModal: React.FC<AdminEditProductModalProps> = ({
       descriptionKhmer,
       image: imageUrl || product.image,
       galleryImages: galleryImages.filter((img) => Boolean(img)),
+      videoUrl: videoUrl.trim() || undefined,
       accountSpecs: {
         levelRank,
         meleeSkills,
@@ -324,6 +326,7 @@ export const AdminEditProductModal: React.FC<AdminEditProductModalProps> = ({
                     <option value="evade">🏃‍♂️ Evade Items</option>
                     <option value="mm2">🗡️ Murder Mystery 2</option>
                     <option value="blade-ball">⚔️ Blade Ball Swords</option>
+                    <option value="steal-egg">🥚 Steal an Egg</option>
                   </select>
                 </div>
 
@@ -595,6 +598,23 @@ export const AdminEditProductModal: React.FC<AdminEditProductModalProps> = ({
                       </div>
                     )}
                   </div>
+                </div>
+
+                {/* Video Link */}
+                <div className="pt-3 border-t border-white/5">
+                  <span className="text-xs font-headline text-[#ffd7a1] uppercase font-bold block mb-2">
+                    Video Link (optional)
+                  </span>
+                  <input
+                    type="text"
+                    value={videoUrl}
+                    onChange={(e) => setVideoUrl(e.target.value)}
+                    placeholder="YouTube or direct .mp4 link..."
+                    className="w-full bg-[#11131a] text-white border border-white/10 rounded-xl px-3.5 py-2 text-xs font-mono focus:border-[#ffb230] outline-none"
+                  />
+                  <p className="mt-1.5 text-[11px] text-[#8B90A0]">
+                    Shows first in the store's media carousel. Paste a link — don't upload a raw video file, it's too large to store directly.
+                  </p>
                 </div>
               </div>
             </div>

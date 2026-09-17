@@ -44,7 +44,7 @@ function setCanonicalUrl(url: string) {
  */
 export function updateProductSeo(product: Product) {
   if (typeof window === 'undefined') return;
-  const currentUrl = `${window.location.origin}/?product=${encodeURIComponent(product.id)}`;
+  const currentUrl = `${window.location.origin}/product/${encodeURIComponent(product.id)}`;
   const price = typeof product.priceUSD === 'number' ? product.priceUSD : (product.price || 0);
   const isAvailable = !product.isSold && (product.stock ?? 1) > 0;
 
@@ -120,6 +120,6 @@ export function resetDefaultSeo() {
  * Generates direct share URL for a product.
  */
 export function getProductShareUrl(productId: string): string {
-  if (typeof window === 'undefined') return `/?product=${encodeURIComponent(productId)}`;
-  return `${window.location.origin}/?product=${encodeURIComponent(productId)}`;
+  if (typeof window === 'undefined') return `/product/${encodeURIComponent(productId)}`;
+  return `${window.location.origin}/product/${encodeURIComponent(productId)}`;
 }

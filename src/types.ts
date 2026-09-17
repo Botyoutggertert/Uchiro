@@ -1,4 +1,4 @@
-export type CategoryType = 'all' | 'account' | 'fruit' | 'gamepass' | 'evade' | 'mm2' | 'blade-ball';
+export type CategoryType = 'all' | 'account' | 'fruit' | 'gamepass' | 'evade' | 'mm2' | 'blade-ball' | 'steal-egg';
 
 export type FulfillmentType = 'account' | 'gift' | 'trade';
 
@@ -29,6 +29,7 @@ export interface Product {
     instructionsKhmer?: string;
   };
   galleryImages?: string[];
+  videoUrl?: string; // optional product video (YouTube/direct link) shown first in the media gallery
   accountSpecs?: {
     levelRank?: string;
     meleeSkills?: string;
@@ -196,8 +197,10 @@ export interface StoreSettings {
   exchangeRateKHR?: number; // e.g. 4100
   // Telegram Bot Integration Config
   telegramBotToken?: string;
+  telegramAdminBotToken?: string;
   telegramAdminChatId?: string;
   telegramChannelId?: string;
+  telegramChannelUrl?: string;
   orderAlertsEnabled?: boolean;
   topupAlertsEnabled?: boolean;
   lowStockAlertsEnabled?: boolean;

@@ -6,6 +6,7 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   signInWithCredential,
+  signInWithCustomToken,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
@@ -486,10 +487,27 @@ export async function loginWithGoogleCredential(idToken: string) {
 }
 
 /**
+ * Completes Telegram code-login: exchanges the backend-issued custom token
+ * (from /api/auth/telegram/verify-code) for a real Firebase session.
+ */
+export async function loginWithTelegramToken(customToken: string) {
+  const cred = await signInWithCustomToken(auth, customToken);
+  return cred.user;
+}
+
+/**
  * Send Password Reset Email (User receives link/code to reset)
+ * After resetting, Firebase's hosted reset page sends the user back to
+ * the real store domain (via actionCodeSettings.url) instead of leaving
+ * them on an unbranded default *.firebaseapp.com page with no way back.
  */
 export async function triggerPasswordReset(email: string) {
-  await sendPasswordResetEmail(auth, email);
+  const siteUrl =
+    (typeof window !== 'undefined' && window.location.origin) || 'https://www.uchiro.store';
+  await sendPasswordResetEmail(auth, email, {
+    url: `${siteUrl}/?reset=done`,
+    handleCodeInApp: false,
+  });
 }
 
 /**
