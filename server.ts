@@ -4179,14 +4179,58 @@ async function startTelegramPoller() {
   })();
 }
 
-// Telegram Webhook Endpoint
+// Telegram Webhook Endpoint (admin bot: order approvals, admin commands, etc.)
 app.post('/api/telegram/webhook', async (req, res) => {
+  // Respond immediately; Telegram doesn't need to wait for our processing,
+  // and a slow response can cause it to retry the same update.
+  res.sendStatus(200);
   try {
     await handleTelegramUpdate(req.body);
   } catch (e: any) {
     console.error('Telegram webhook processing error:', e.message);
   }
-  res.sendStatus(200);
+});
+
+// One-time setup: registers the webhook above with Telegram for the admin bot.
+// Call this once after deploying (or whenever the admin bot token changes).
+// This is what makes /approve, /pending, order-approval buttons, etc. actually
+// work in production -- without it, the admin bot only worked when running the
+// server continuously (local/Railway), never on Vercel.
+app.post('/api/telegram/admin-webhook/register', async (req, res) => {
+  const token = getAdminBotToken();
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'Set a bot token in Admin Settings first.' });
+  }
+
+  // Telegram only allows one webhook per bot. If the admin bot and store bot
+  // are the same bot (no separate telegramAdminBotToken set), registering
+  // this webhook would silently overwrite the customer login webhook,
+  // breaking Telegram code-login. Warn instead of guessing which one you want.
+  if (!db.settings.telegramAdminBotToken && db.settings.telegramBotToken) {
+    return res.status(400).json({
+      success: false,
+      error:
+        'Your admin bot and store bot are currently the same bot token. Registering this webhook would break Telegram customer login (which uses the same bot for its own webhook). Set a separate telegramAdminBotToken in Admin Settings first, then retry.',
+    });
+  }
+
+  const baseUrl = getAppBaseUrl(req);
+  const webhookUrl = `${baseUrl}/api/telegram/webhook`;
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ['message', 'callback_query'] }),
+    });
+    const data = await response.json();
+    if (data.ok) {
+      registerTelegramBotCommands(token).catch(() => {});
+    }
+    res.json({ success: !!data.ok, webhookUrl, telegramResponse: data });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
 });
 
 // Register Bot Slash Commands with Telegram API (Bot Menu)
