@@ -118,6 +118,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       .catch(() => {});
   }, [isOpen]);
 
+  // Countdown for the Telegram "resend code" cooldown. Must stay above the
+  // early return below -- a hook called only when isOpen is true changes the
+  // number of hooks React sees between renders, which throws error #310.
+  useEffect(() => {
+    if (telegramCooldown <= 0) return;
+    const id = setInterval(() => setTelegramCooldown((prev) => Math.max(0, prev - 1)), 1000);
+    return () => clearInterval(id);
+  }, [telegramCooldown]);
+
   if (!isOpen) return null;
 
   const resetForm = () => {
@@ -454,13 +463,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setIsLoading(false);
     }
   };
-
-  // Countdown for the "resend code" cooldown
-  useEffect(() => {
-    if (telegramCooldown <= 0) return;
-    const id = setInterval(() => setTelegramCooldown((prev) => Math.max(0, prev - 1)), 1000);
-    return () => clearInterval(id);
-  }, [telegramCooldown]);
 
   // 2. Handle Email/Password Sign Up with Strict 1-User-1-Username and 1-User-1-Email Policy
   const handleSignUp = async (e: React.FormEvent) => {
