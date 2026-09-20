@@ -416,16 +416,18 @@ export class ApiUtility {
     return { products: [], orders: [] };
   }
 
-  async resetData(mode: 'zero' | 'starter'): Promise<boolean> {
+  async resetData(mode: 'zero' | 'starter'): Promise<{ success: boolean; error?: string }> {
     try {
       const res = await fetch('/api/reset-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),
       });
-      return res.ok;
-    } catch {
-      return false;
+      const json = await res.json().catch(() => null);
+      if (res.ok) return { success: true };
+      return { success: false, error: json?.error || `Reset failed (${res.status})` };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Network error' };
     }
   }
 
