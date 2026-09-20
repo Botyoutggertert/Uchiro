@@ -30,13 +30,6 @@ export const AccountPhotosModal: React.FC<AccountPhotosModalProps> = ({
         if (img && !list.includes(img)) list.push(img);
       });
     }
-    // If only 1 image exists, provide standard high-res account views for game detail showcase
-    if (list.length === 1 && (product.category === 'account' || product.fulfillmentType === 'account')) {
-      list.push(
-        'https://lh3.googleusercontent.com/aida-public/AB6AXuD9DF2r82If6k-o9Qy6hKhyEHQ3NPbNIgYk-T7uQuAdBVMIBUCMwooA0nSI9h4M7OvdHv8fiVIVoaYKp9Y9QCCW7q1NENUTjAI_H2tRCKvW2wTwMAjOTaQVTZ-VmPi_8yukjjb1PLAGKOiVWbA0QAXzfXX6e47NWWx00S6sI_JS2eCerJIX5hJsgb0oHTfekOKXNh60Bs1LUd852ku8qCaQYOTSfUhV-eBXOtc93-Zp3lDiADWfzOnh',
-        'https://lh3.googleusercontent.com/aida-public/AB6AXuALQbCc50G6KLs92tN0eELonrjHJe-8u9EWsQqEFRatRZt7TkO-e0PvcOaTFQelO1uzme9TRCMCHWBDZlmiVtN-fZRijhhKA5PJ-BN1-Xi2HQIlzD5s7AU_tE7dn4vZqd_m9YhDvt7WU3vSdKferzlCo2crER8gHVSNillopH9LxGW74r3Amn1LcJ6gWeBoJC-vhasU5J7d-B9MoEUs0We5i5FQdWnSiQuQ92PMWG3iH-Jh9Q6QHcwm'
-      );
-    }
     return list;
   }, [product]);
 
