@@ -1152,6 +1152,49 @@ async function sendOrderReceiptEmail(order: Order): Promise<void> {
   }
 }
 
+/**
+ * Sends order confirmation (and delivered account credentials, if any) to the
+ * buyer's linked Telegram, using the same db.telegramLinks mapping the
+ * Telegram code-login feature uses. Silently does nothing if the buyer never
+ * linked their Telegram account -- this is a bonus notification channel
+ * alongside email, not a replacement for it.
+ */
+async function sendOrderReceiptTelegram(order: Order): Promise<void> {
+  try {
+    const lookupName = (order.buyerUsername || order.customerName || '').trim().toLowerCase();
+    if (!lookupName || !db.telegramLinks) return;
+
+    const link = db.telegramLinks[lookupName];
+    if (!link?.chatId) return;
+
+    const price = order.totalUSD || 0;
+    const productTitle = order.product?.title || order.productName || 'Item';
+    const creds = order.credentialsDelivered;
+
+    let message =
+      `✅ *Order Confirmed!*\n\n` +
+      `🧾 Order: \`${order.id}\`\n` +
+      `🛍️ Item: ${productTitle}\n` +
+      `💵 Paid: $${price.toFixed(2)} USD\n`;
+
+    if (creds) {
+      message +=
+        `\n🔑 *Your Account Details*\n` +
+        `• Username: \`${creds.username}\`\n` +
+        `• Password: \`${creds.password}\`\n` +
+        (creds.authenticatorKey ? `• 2FA Key: \`${creds.authenticatorKey}\`\n` : '') +
+        (creds.warrantyDurationDays ? `\n🛡️ Covered by a ${creds.warrantyDurationDays}-day warranty.\n` : '');
+    }
+
+    message += `\nThanks for shopping at Uchiro Store! 💬 Support: @Noreakyout`;
+
+    await sendCustomerBotMsg(link.chatId, message);
+  } catch (err: any) {
+    // Must never block/undo an order approval.
+    console.error('[customerBot] Failed to send order receipt via Telegram:', err?.message || err);
+  }
+}
+
 async function dispatchWelcomeEmail({
   email,
   username,
@@ -1421,6 +1464,87 @@ app.get('/api/admin/backup/export', (req, res) => {
 });
 
 // Create a timestamped snapshot in Firestore.
+// Sends the full database as a downloadable .json file directly to the
+// admin's Telegram chat, using Telegram's sendDocument API.
+async function sendBackupFileToAdmin(
+  jsonContent: string,
+  filename: string
+): Promise<{ success: boolean; error?: string }> {
+  const token = getAdminBotToken();
+  const chatId = db.settings.telegramAdminChatId;
+  if (!token) return { success: false, error: 'No admin bot token configured' };
+  if (!chatId) return { success: false, error: 'No telegramAdminChatId configured in Admin Settings' };
+
+  try {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append(
+      'caption',
+      `📦 Uchiro Store backup\n${new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' })}`
+    );
+    form.append('document', new Blob([jsonContent], { type: 'application/json' }), filename);
+
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+      method: 'POST',
+      body: form as any,
+    });
+    const data = await response.json();
+    return data.ok ? { success: true } : { success: false, error: JSON.stringify(data) };
+  } catch (err: any) {
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+// Scheduled backup: creates a Firestore snapshot (if configured) AND sends
+// the full database as a file directly to the admin's Telegram, so a backup
+// exists even for admins who haven't set up Firestore persistence.
+//
+// Authenticated two ways: Vercel's own CRON_SECRET (sent automatically when
+// triggered by vercel.json's schedule), or a logged-in admin's JWT (for a
+// manual "Backup Now" button). Rejects everything else.
+app.post('/api/cron/auto-backup', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+
+  const isCronRequest = !!process.env.CRON_SECRET && bearerToken === process.env.CRON_SECRET;
+  let isAdminRequest = false;
+  if (!isCronRequest && bearerToken) {
+    try {
+      const decoded = jwt.verify(bearerToken, JWT_SECRET) as any;
+      isAdminRequest = decoded?.role === 'admin';
+    } catch {
+      // Invalid token -- falls through to the 401 below.
+    }
+  }
+
+  if (!isCronRequest && !isAdminRequest) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  try {
+    let remoteBackupId: string | undefined;
+    if (isRemotePersistenceEnabled()) {
+      const result = await createRemoteBackup(db as unknown as Record<string, any>, 'auto');
+      remoteBackupId = result.id;
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const telegramResult = await sendBackupFileToAdmin(
+      JSON.stringify(db, null, 2),
+      `uchiro-backup-${stamp}.json`
+    );
+
+    res.json({
+      success: true,
+      remoteBackupId,
+      telegramSent: telegramResult.success,
+      telegramError: telegramResult.error,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
 app.post('/api/admin/backup/create', async (req, res) => {
   if (!isRemotePersistenceEnabled()) {
     return res.status(400).json({
@@ -2121,6 +2245,7 @@ app.put('/api/orders/:id', async (req, res) => {
       badgeColor: '#3ECF8E',
     });
     await sendOrderReceiptEmail(order);
+    await sendOrderReceiptTelegram(order);
   } else if (status === 'rejected') {
     await logActivity({
       actionType: 'order_reject',
@@ -3418,6 +3543,7 @@ async function approveOrderCore(order: Order, adminSource = "Admin Telegram Bot"
   }
   await saveDatabase(db);
   await sendOrderReceiptEmail(order);
+  await sendOrderReceiptTelegram(order);
   return order;
 }
 
