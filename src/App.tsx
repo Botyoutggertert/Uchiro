@@ -956,6 +956,31 @@ export function App() {
     }
   };
 
+  // Handles the "Restore Starter Pack" reset (and can also handle 'zero' the
+  // same way). Unlike handleResetToZero, this re-fetches the real state from
+  // the server afterward instead of assuming what it should look like --
+  // more robust if the starter pack's contents ever change.
+  const handleResetData = async (mode: 'zero' | 'starter') => {
+    try {
+      const result = await api.resetData(mode);
+      if (!result.success) {
+        showToast(result.error || 'Reset failed');
+        return;
+      }
+      const fullState = await api.getFullState();
+      if (fullState) {
+        setProducts(fullState.products || []);
+        setOrders(fullState.orders || []);
+        if (fullState.coupons) setCoupons(fullState.coupons);
+        if (fullState.settings) setSettings(fullState.settings);
+      }
+      showToast(mode === 'zero' ? 'Clean slate initialized!' : 'Starter pack restored!');
+    } catch (err: any) {
+      console.error('Failed to reset:', err);
+      showToast(err?.message || 'Reset failed');
+    }
+  };
+
   const handleImportBackup = async (importedData: FullAppState, mode: 'overwrite' | 'merge'): Promise<boolean> => {
     try {
       const res = await api.importBackup(importedData, mode);
@@ -1547,6 +1572,7 @@ export function App() {
                     onLogoutAdmin={handleAdminLogout}
                     onImportBackup={handleImportBackup}
                     onResetToZero={handleResetToZero}
+                    onResetData={handleResetData}
                     lang={lang}
                     storeLogoUrl={settings.logoUrl}
                   />
@@ -1597,6 +1623,7 @@ export function App() {
                     onSaveSettings={handleSaveSettings}
                     onSaveSongs={handleSaveSongs}
                     onResetToZero={handleResetToZero}
+                    onResetData={handleResetData}
                     onBack={() => setActiveScreen('admin-dashboard')}
                     lang={lang}
                   />
