@@ -96,7 +96,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     }
   };
 
-  // Collect all media: product.videoUrl (first, if present) + product.image + (product.galleryImages || []) + sample detail views
+  // Collect all media: product.videoUrl (first, if present) + product.image + (product.galleryImages || [])
   type MediaItem = { type: 'video' | 'image'; src: string };
   const media: MediaItem[] = React.useMemo(() => {
     if (!product) return [];
@@ -107,13 +107,6 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
       product.galleryImages.forEach((img) => {
         if (img && !list.some((m) => m.src === img)) list.push({ type: 'image', src: img });
       });
-    }
-    // High-res account detail showcase images for accounts
-    if (list.length <= 1 && (product.category === 'account' || product.fulfillmentType === 'account')) {
-      list.push(
-        { type: 'image', src: 'https://lh3.googleusercontent.com/aida-public/AB6AXuD9DF2r82If6k-o9Qy6hKhyEHQ3NPbNIgYk-T7uQuAdBVMIBUCMwooA0nSI9h4M7OvdHv8fiVIVoaYKp9Y9QCCW7q1NENUTjAI_H2tRCKvW2wTwMAjOTaQVTZ-VmPi_8yukjjb1PLAGKOiVWbA0QAXzfXX6e47NWWx00S6sI_JS2eCerJIX5hJsgb0oHTfekOKXNh60Bs1LUd852ku8qCaQYOTSfUhV-eBXOtc93-Zp3lDiADWfzOnh' },
-        { type: 'image', src: 'https://lh3.googleusercontent.com/aida-public/AB6AXuALQbCc50G6KLs92tN0eELonrjHJe-8u9EWsQqEFRatRZt7TkO-e0PvcOaTFQelO1uzme9TRCMCHWBDZlmiVtN-fZRijhhKA5PJ-BN1-Xi2HQIlzD5s7AU_tE7dn4vZqd_m9YhDvt7WU3vSdKferzlCo2crER8gHVSNillopH9LxGW74r3Amn1LcJ6gWeBoJC-vhasU5J7d-B9MoEUs0We5i5FQdWnSiQuQ92PMWG3iH-Jh9Q6QHcwm' }
-      );
     }
     return list;
   }, [product]);
