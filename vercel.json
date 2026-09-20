@@ -4,6 +4,12 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "regions": ["sin1"],
+  "crons": [
+    {
+      "path": "/api/cron/auto-backup",
+      "schedule": "0 17 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
