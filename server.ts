@@ -591,6 +591,52 @@ app.get('/api/activity/leaderboard', (req, res) => {
   });
 });
 
+// ==================== REAL-TIME PRESENCE & STORE STATS ====================
+// Replaces the old CustomerStoreStats widget's fabricated numbers (a random
+// fake "online now" counter with a fixed baseline, and purchase/registration
+// counts padded with invented base numbers) with genuine tracked data.
+
+// In-memory only (not persisted to Firestore) -- presence is inherently
+// ephemeral, doesn't need to survive a restart, and would just add noise to
+// backups if it were saved alongside real store data.
+const presenceHeartbeats = new Map<string, number>();
+const PRESENCE_WINDOW_MS = 90 * 1000; // consider a session "online" for 90s after its last heartbeat
+
+function countOnlineNow(): number {
+  const cutoff = Date.now() - PRESENCE_WINDOW_MS;
+  let count = 0;
+  for (const [sessionId, lastSeen] of presenceHeartbeats) {
+    if (lastSeen < cutoff) {
+      presenceHeartbeats.delete(sessionId);
+    } else {
+      count++;
+    }
+  }
+  return count;
+}
+
+// Called periodically by any open tab on the site (customer or admin) to mark
+// that session as currently active.
+app.post('/api/presence/heartbeat', (req, res) => {
+  const sessionId = String(req.body?.sessionId || '').slice(0, 100);
+  if (!sessionId) return res.status(400).json({ success: false, error: 'sessionId is required' });
+  presenceHeartbeats.set(sessionId, Date.now());
+  res.json({ success: true, onlineNow: countOnlineNow() });
+});
+
+// Real store stats for the public storefront stats bar -- no fabricated
+// baselines, just actual counts from the database.
+app.get('/api/stats/public', (req, res) => {
+  const totalCompletedOrders = (db.orders || []).filter((o) => o.status === 'delivered').length;
+  const totalRegisteredUsers = (db.users || []).length;
+  res.json({
+    success: true,
+    totalCompletedOrders,
+    totalRegisteredUsers,
+    onlineNow: countOnlineNow(),
+  });
+});
+
 // Auth Username Resolution & Linkage
 app.post('/api/auth/link-username', async (req, res) => {
   const { username, email } = req.body;
