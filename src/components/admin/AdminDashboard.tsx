@@ -51,6 +51,7 @@ interface AdminDashboardProps {
   onLogoutAdmin: () => void;
   onImportBackup?: (importedData: FullAppState, mode: 'overwrite' | 'merge') => Promise<boolean>;
   onResetToZero?: () => void;
+  onResetData?: (mode: 'zero' | 'starter') => void;
   lang: 'KM' | 'EN';
   storeLogoUrl?: string;
 }
@@ -68,6 +69,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onLogoutAdmin,
   onImportBackup,
   onResetToZero,
+  onResetData,
   lang,
   storeLogoUrl,
 }) => {
@@ -781,6 +783,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           songs={songs}
           onImportBackup={onImportBackup || (async () => false)}
           onResetToZero={onResetToZero}
+          onResetData={onResetData}
           lang={lang}
         />
       )}
