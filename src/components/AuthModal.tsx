@@ -188,10 +188,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         ? 'កម្មវិធីរុករក (Browser) បានទប់ស្កាត់ផ្ទាំង Popup។ សូមអនុញ្ញាត Popups ឬប្រើប្រាស់អ៊ីមែល។'
         : 'Popup was blocked by your browser. Please allow popups or use email sign in.';
     }
+    if (code === 'auth/operation-not-supported-in-this-environment') {
+      return lang === 'KM'
+        ? 'Google មិនអនុញ្ញាតការចូលពី browser ដែលបង្កប់ក្នុងកម្មវិធីផ្សេង (ដូចជា Telegram ឬ Facebook) ទេ។ សូមបើកគេហទំព័រនេះនៅក្នុង Safari ឬ Chrome ធម្មតា រួចសាកល្បងម្តងទៀត ឬប្រើអ៊ីមែលនិងពាក្យសម្ងាត់។'
+        : "Google doesn't allow sign-in from browsers embedded inside other apps (like Telegram or Facebook's built-in browser). Open this site in Safari or Chrome directly and try again, or use email & password.";
+    }
     if (code === 'auth/unauthorized-domain') {
       return lang === 'KM'
-        ? 'ការផ្ទៀងផ្ទាត់ Google អាចទាមទារការចូលប្រើលើ browser ផ្ទាល់។ អ្នកអាចប្រើប្រាស់អ៊ីមែល និងពាក្យសម្ងាត់បានយ៉ាងរហ័ស។'
-        : 'Google auth is restricted in preview. You can also instantly sign in or register with email & password.';
+        ? 'កំហុសការកំណត់រចនាសម្ព័ន្ធ: uchiro.store មិនទាន់ត្រូវបានបញ្ចូលក្នុងបញ្ជី Authorized domains នៅ Firebase Console ទេ (Authentication > Settings > Authorized domains)។ សូមប្រើអ៊ីមែល និងពាក្យសម្ងាត់ជំនួសវិញ។'
+        : 'Setup error: uchiro.store is not yet in Firebase\'s Authorized domains list (Authentication > Settings > Authorized domains in the Firebase Console). Use email & password to sign in for now.';
     }
     if (code === 'auth/unauthorized-continue-uri') {
       return lang === 'KM'
