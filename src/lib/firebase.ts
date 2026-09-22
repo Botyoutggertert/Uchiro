@@ -32,7 +32,7 @@ import {
 
 export const firebaseConfig = {
   apiKey: "AIzaSyBGkr8X5r5Q8QLvv9WOIbKomZ0G0U7t3Tw",
-  authDomain: "uchiro-store.firebaseapp.com",
+  authDomain: "auth.uchiro.store",
   projectId: "uchiro-store",
   storageBucket: "uchiro-store.firebasestorage.app",
   messagingSenderId: "458075894163",
