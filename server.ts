@@ -19,8 +19,18 @@ import { isAdminAuthEnabled, createTelegramCustomToken } from './src/lib/firebas
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Enable large JSON bodies for uploaded images
-app.use(express.json({ limit: '50mb' }));
+// Enable large JSON bodies for uploaded images. The `verify` callback stashes
+// the raw bytes on req.rawBody alongside the normal parsed req.body -- needed
+// for verifying webhook HMAC signatures (KHPay, etc.), which must be computed
+// over the exact original request bytes, not a re-serialized copy.
+app.use(
+  express.json({
+    limit: '50mb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ==================== CLOUDFLARE ANTI-DDOS & WAF SECURITY ENGINE ====================
@@ -155,6 +165,74 @@ app.get(['/health', '/api/health'], (req, res) => {
     service: 'uchiro-store-server',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
+  });
+});
+
+// One-stop diagnostic: tells you definitively what's actually configured vs
+// missing, without ever exposing the secret values themselves. Meant to
+// replace guessing/back-and-forth when something that depends on an env var
+// (Firestore, Telegram login, KHPay, scheduled backups) isn't working.
+//
+// Gated the same way as /api/cron/auto-backup: either a valid admin login,
+// or the CRON_SECRET (so you can also curl this from a terminal without
+// logging in first).
+app.get('/api/admin/system-status', (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const isCronAuth = !!process.env.CRON_SECRET && bearerToken === process.env.CRON_SECRET;
+  let isAdminAuth = false;
+  if (!isCronAuth && bearerToken) {
+    try {
+      isAdminAuth = (jwt.verify(bearerToken, JWT_SECRET) as any)?.role === 'admin';
+    } catch {}
+  }
+  if (!isCronAuth && !isAdminAuth) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  const rawFirebaseCreds = process.env.FIREBASE_SERVICE_ACCOUNT;
+  let firebaseJsonValid = false;
+  let firebaseJsonError: string | undefined;
+  let firebaseHasRequiredFields = false;
+  if (rawFirebaseCreds) {
+    try {
+      const parsed = JSON.parse(rawFirebaseCreds);
+      firebaseJsonValid = true;
+      firebaseHasRequiredFields = !!(parsed.private_key && parsed.client_email && parsed.project_id);
+    } catch (err: any) {
+      firebaseJsonError = err?.message || 'Invalid JSON';
+    }
+  }
+
+  res.json({
+    success: true,
+    checkedAt: new Date().toISOString(),
+    nodeVersion: process.version,
+    vercelRegion: process.env.VERCEL_REGION || null,
+    isVercel: !!process.env.VERCEL,
+    firebase: {
+      envVarPresent: !!rawFirebaseCreds,
+      jsonIsValid: firebaseJsonValid,
+      jsonParseError: firebaseJsonError,
+      hasRequiredFields: firebaseHasRequiredFields,
+      adminSdkInitialized: isAdminAuthEnabled(),
+      firestorePersistenceActive: isRemotePersistenceEnabled(),
+    },
+    telegram: {
+      storeBotTokenSet: !!db.settings.telegramBotToken,
+      adminBotTokenSet: !!db.settings.telegramAdminBotToken,
+      adminChatIdSet: !!db.settings.telegramAdminChatId,
+      verificationBotUsernameSet: !!db.settings.verificationBotUsername,
+      resolvedAdminBotToken: !!getAdminBotToken(),
+    },
+    khpay: {
+      apiKeySet: !!process.env.KHPAY_API_KEY,
+      webhookSecretSet: !!process.env.KHPAY_WEBHOOK_SECRET,
+    },
+    cron: {
+      cronSecretSet: !!process.env.CRON_SECRET,
+    },
+    jwtSecretIsDefault: JWT_SECRET === 'uchiro-secure-jwt-auth-secret-key-2025',
   });
 });
 
@@ -3043,6 +3121,145 @@ function buildKHQRPayload(options: {
 }
 
 // Generate KHQR String, MD5 Hash, and QR Code Data URL
+// ==================== KHPAY (ABA PAYWAY) INTEGRATION ====================
+// https://khpay.site -- a second payment option alongside the existing KHQR
+// flow. KHPay hosts its own payment page (payment_url), so unlike KHQR this
+// doesn't need an in-app QR renderer: the customer is sent to KHPay's page,
+// pays there, and is redirected/webhooked back.
+
+const KHPAY_BASE_URL = 'https://khpay.site/api/v1';
+
+async function khpayRequest(path: string, options: { method?: string; body?: any } = {}): Promise<any> {
+  const apiKey = process.env.KHPAY_API_KEY;
+  if (!apiKey) throw new Error('KHPAY_API_KEY is not configured on the server.');
+
+  const response = await fetch(`${KHPAY_BASE_URL}${path}`, {
+    method: options.method || 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json();
+  if (!response.ok || data.success === false) {
+    const err: any = new Error(data.error || `KHPay request failed (${response.status})`);
+    err.khpayErrorCode = data.error_code;
+    err.status = response.status;
+    throw err;
+  }
+  return data;
+}
+
+// Creates a KHPay payment for an order. The customer is redirected to the
+// returned payment_url to complete payment via ABA PayWay/KHQR.
+app.post('/api/khpay/generate', async (req, res) => {
+  const { amount, orderId, note } = req.body || {};
+  const numAmount = Number(amount);
+  if (!numAmount || numAmount <= 0) {
+    return res.status(400).json({ success: false, error: 'A valid amount is required' });
+  }
+
+  try {
+    const baseUrl = getAppBaseUrl(req);
+    const result = await khpayRequest('/qr/generate', {
+      method: 'POST',
+      body: {
+        amount: numAmount.toFixed(2),
+        currency: 'USD',
+        note: note || `Uchiro Store Order ${orderId || ''}`.trim(),
+        callback_url: `${baseUrl}/api/khpay/webhook`,
+        metadata: orderId ? { order_id: orderId } : undefined,
+      },
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(err.status || 500).json({ success: false, error: err.message, error_code: err.khpayErrorCode });
+  }
+});
+
+// Polled by the frontend while the customer is on KHPay's payment page (or
+// used as the server-side source of truth on the success page -- never trust
+// a success_url redirect alone, per KHPay's own docs).
+app.get('/api/khpay/check/:transactionId', async (req, res) => {
+  try {
+    const result = await khpayRequest(`/qr/check/${encodeURIComponent(req.params.transactionId)}`);
+    res.json(result);
+  } catch (err: any) {
+    res.status(err.status || 500).json({ success: false, error: err.message, error_code: err.khpayErrorCode });
+  }
+});
+
+// Webhook: KHPay POSTs here when a payment's status changes. Verifies the
+// HMAC signature against the raw request body before trusting anything in it
+// -- an unverified webhook would let anyone fake a "payment.paid" event and
+// get a free order fulfilled.
+app.post('/api/khpay/webhook', async (req, res) => {
+  res.status(200).json({ received: true }); // ack fast, per KHPay's docs
+
+  try {
+    const secret = process.env.KHPAY_WEBHOOK_SECRET;
+    const signatureHeader = (req.headers['x-webhook-signature'] as string) || '';
+    const rawBody: Buffer | undefined = (req as any).rawBody;
+
+    if (!secret) {
+      console.error('[khpay webhook] KHPAY_WEBHOOK_SECRET not configured -- ignoring webhook (cannot verify authenticity).');
+      return;
+    }
+    if (!rawBody) {
+      console.error('[khpay webhook] No raw body captured -- cannot verify signature.');
+      return;
+    }
+
+    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const provided = Buffer.from(signatureHeader);
+    const expectedBuf = Buffer.from(expected);
+    const validSignature =
+      provided.length === expectedBuf.length && crypto.timingSafeEqual(provided, expectedBuf);
+
+    if (!validSignature) {
+      console.error('[khpay webhook] Invalid signature -- rejecting.');
+      return;
+    }
+
+    const event = req.body;
+    if (event?.event === 'payment.paid') {
+      const orderId = event.data?.metadata?.order_id;
+      if (orderId) {
+        const order = db.orders.find((o) => o.id === orderId);
+        if (order && order.status === 'pending') {
+          await approveOrderCore(order, 'KHPay Webhook');
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[khpay webhook] Processing error:', err?.message || err);
+  }
+});
+
+// One-time setup: registers our webhook URL with KHPay. Run this once (e.g.
+// via the admin panel or a curl command), then copy the returned `secret`
+// into KHPAY_WEBHOOK_SECRET in your environment variables -- KHPay only
+// shows it once.
+app.post('/api/khpay/webhook/register', async (req, res) => {
+  try {
+    const baseUrl = getAppBaseUrl(req);
+    const result = await khpayRequest('/webhooks', {
+      method: 'POST',
+      body: {
+        url: `${baseUrl}/api/khpay/webhook`,
+        events: ['payment.paid', 'payment.expired', 'payment.failed'],
+      },
+    });
+    res.json({
+      ...result,
+      reminder: 'Copy data.secret into your KHPAY_WEBHOOK_SECRET environment variable now -- KHPay will not show it again.',
+    });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ success: false, error: err.message, error_code: err.khpayErrorCode });
+  }
+});
+
 app.post('/api/khqr/generate', async (req, res) => {
   try {
     const {
