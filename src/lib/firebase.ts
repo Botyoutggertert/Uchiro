@@ -31,14 +31,13 @@ import {
 } from 'firebase/firestore';
 
 export const firebaseConfig = {
-  projectId: "restful-journey-b2sm5",
-  appId: "1:988799741608:web:ac83455d4951b2587f5c9d",
-  apiKey: "AIzaSyDpZ-G_PCbZXC9hyQQmVnj1sWz0Ey6wuIk",
-  authDomain: "restful-journey-b2sm5.firebaseapp.com",
-  firestoreDatabaseId: "ai-studio-uchirostorecambo-07659fd4-8323-4d7d-bc3b-fe67c24ac88c",
-  storageBucket: "restful-journey-b2sm5.firebasestorage.app",
-  messagingSenderId: "988799741608",
-  oAuthClientId: "988799741608-n3inbbt875gosd2ljjj3e24prqrk4v9q.apps.googleusercontent.com",
+  apiKey: "AIzaSyBGkr8X5r5Q8QLvv9WOIbKomZ0G0U7t3Tw",
+  authDomain: "uchiro-store.firebaseapp.com",
+  projectId: "uchiro-store",
+  storageBucket: "uchiro-store.firebasestorage.app",
+  messagingSenderId: "458075894163",
+  appId: "1:458075894163:web:54db112a4b798d0ebb3866",
+  measurementId: "G-WZRY696TPX",
 };
 
 // Initialize Firebase App singleton
@@ -53,8 +52,8 @@ googleProvider.setCustomParameters({
   prompt: 'select_account',
 });
 
-// Initialize Cloud Firestore with dedicated Database ID
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Initialize Cloud Firestore with default database
+export const db = getFirestore(app);
 
 // Test connection on boot as required by Firebase integration guidelines
 export async function testFirestoreConnection() {
